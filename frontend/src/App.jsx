@@ -26,6 +26,11 @@ const setStoredValue = (key, value) => {
   window.localStorage.setItem(key, value)
 }
 
+const clearStoredValue = (key) => {
+  window.sessionStorage.removeItem(key)
+  window.localStorage.removeItem(key)
+}
+
 function App() {
   const pathname = window.location.pathname
   const adminMode = useMemo(() => isAdminRoute(pathname), [pathname])
@@ -96,6 +101,18 @@ function App() {
     window.location.assign(to)
   }
 
+  const handleAdminAuthFailure = useCallback((data, fallbackMessage) => {
+    const code = String(data?.error || '').trim()
+    if (code === 'invalid_admin' || code === 'missing_admin') {
+      clearStoredValue('admin_token')
+      setAdminToken('')
+      setAdminMessage('Admin session expired. Please login again.')
+      return true
+    }
+    setAdminMessage(data?.message || fallbackMessage)
+    return false
+  }, [])
+
   const bootstrapFromQrToken = useCallback(async (qrToken, redirectToGallery = false) => {
     const trimmedToken = String(qrToken || '').trim()
     if (!trimmedToken) {
@@ -156,10 +173,13 @@ function App() {
     })
     const data = await response.json()
     if (!response.ok) {
+      if (response.status === 401 && handleAdminAuthFailure(data, 'Failed to load pending photos')) {
+        return
+      }
       throw new Error(data?.message || 'Failed to load pending photos')
     }
     setPendingItems(data.items || [])
-  }, [adminToken])
+  }, [adminToken, handleAdminAuthFailure])
 
   const loadApproved = useCallback(async (tokenValue) => {
     const useToken = tokenValue || adminToken
@@ -171,10 +191,13 @@ function App() {
     })
     const data = await response.json()
     if (!response.ok) {
+      if (response.status === 401 && handleAdminAuthFailure(data, 'Failed to load approved photos')) {
+        return
+      }
       throw new Error(data?.message || 'Failed to load approved photos')
     }
     setApprovedItems(data.items || [])
-  }, [adminToken])
+  }, [adminToken, handleAdminAuthFailure])
 
   const loadUploadToggle = useCallback(async (tokenValue) => {
     const useToken = tokenValue || adminToken
@@ -185,10 +208,14 @@ function App() {
       headers: { Authorization: `Bearer ${useToken}` },
     })
     const data = await response.json()
-    if (response.ok) {
-      setUploadEnabled(Boolean(data.upload_enabled))
+    if (!response.ok) {
+      if (response.status === 401 && handleAdminAuthFailure(data, 'Unable to load upload toggle')) {
+        return
+      }
+      return
     }
-  }, [adminToken])
+    setUploadEnabled(Boolean(data.upload_enabled))
+  }, [adminToken, handleAdminAuthFailure])
 
   const adminLogin = async () => {
     setAdminMessage('')
@@ -223,6 +250,9 @@ function App() {
     })
     const data = await response.json()
     if (!response.ok) {
+      if (response.status === 401 && handleAdminAuthFailure(data, `Failed to ${action} photo`)) {
+        return
+      }
       setAdminMessage(data?.message || `Failed to ${action} photo`)
       return
     }
@@ -242,6 +272,9 @@ function App() {
     })
     const data = await response.json()
     if (!response.ok) {
+      if (response.status === 401 && handleAdminAuthFailure(data, 'Bulk approve failed')) {
+        return
+      }
       setAdminMessage(data?.message || 'Bulk approve failed')
       return
     }
@@ -261,6 +294,9 @@ function App() {
     })
     const data = await response.json()
     if (!response.ok) {
+      if (response.status === 401 && handleAdminAuthFailure(data, 'Unable to update upload toggle')) {
+        return
+      }
       setAdminMessage(data?.message || 'Unable to update upload toggle')
       return
     }
@@ -294,6 +330,9 @@ function App() {
       })
       const data = await response.json()
       if (!response.ok) {
+        if (response.status === 401 && handleAdminAuthFailure(data, 'Failed to create family')) {
+          return
+        }
         setAdminMessage(data?.message || 'Failed to create family')
         return
       }
@@ -317,6 +356,9 @@ function App() {
     })
     const data = await response.json()
     if (!response.ok) {
+      if (response.status === 401 && handleAdminAuthFailure(data, 'Could not delete photo')) {
+        return
+      }
       setAdminMessage(data?.message || 'Could not delete photo')
       return
     }
@@ -370,6 +412,13 @@ function App() {
 
     bootstrapFromPathToken()
   }, [token, adminMode, galleryMode, scanMode, introMode, adminToken, loadPending, loadUploadToggle, loadApproved, bootstrapFromQrToken])
+
+  const adminLogout = () => {
+    clearStoredValue('admin_token')
+    setAdminToken('')
+    setAdminPassword('')
+    setAdminMessage('Logged out. Please login again.')
+  }
 
   const loadGallery = useCallback(async () => {
     if (galleryRequestInFlightRef.current) {
@@ -853,6 +902,7 @@ function App() {
                 <button className={`admin-menu-item ${adminSection === 'delete' ? 'active' : ''}`} onClick={() => setAdminSection('delete')}>Delete from Gallery</button>
                 <button className={`admin-menu-item ${adminSection === 'toggle' ? 'active' : ''}`} onClick={() => setAdminSection('toggle')}>Upload Toggle</button>
                 <button className={`admin-menu-item ${adminSection === 'tools' ? 'active' : ''}`} onClick={() => setAdminSection('tools')}>Utilities</button>
+                <button className="admin-menu-item" onClick={adminLogout}>Logout</button>
               </aside>
 
               <div className="admin-content">
