@@ -629,6 +629,41 @@ h1 {
 .upload-job--error .upload-job-status { color: #dc2626; }
 .upload-job--uploading .upload-job-status { color: #b45309; }
 
+.retry-btn {
+  margin: 8px 0 10px;
+}
+
+.gallery-skeleton {
+  border: 1px solid #efd9bd;
+  border-radius: 14px;
+  background: #fff;
+  padding: 12px;
+  margin: 8px 0 12px;
+}
+
+.gallery-skeleton-img {
+  width: 100%;
+  aspect-ratio: 4 / 5;
+  border-radius: 12px;
+  background: linear-gradient(90deg, #f3e4d4 25%, #faefe2 50%, #f3e4d4 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.2s infinite linear;
+  margin-bottom: 10px;
+}
+
+.gallery-skeleton-line {
+  height: 12px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #f3e4d4 25%, #faefe2 50%, #f3e4d4 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.2s infinite linear;
+  margin-bottom: 8px;
+}
+
+.gallery-skeleton-line.short {
+  width: 58%;
+}
+
 .swipe-image { cursor: zoom-in; }
 
 /* Spinner */
@@ -644,6 +679,11 @@ h1 {
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+@keyframes shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
 }
 
 /* Photo counter in gallery */

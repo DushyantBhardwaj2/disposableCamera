@@ -52,6 +52,7 @@ function App() {
   const [galleryItems, setGalleryItems] = useState([])
   const [galleryIndex, setGalleryIndex] = useState(0)
   const [galleryMessage, setGalleryMessage] = useState('')
+  const [galleryLoading, setGalleryLoading] = useState(false)
   const dragOriginRef = useRef(null)
   const wasDragRef = useRef(false)
   const [dragX, setDragX] = useState(null)
@@ -77,6 +78,7 @@ function App() {
   const cameraStreamRef = useRef(null)
   const scannerLoopRef = useRef(null)
   const galleryRequestInFlightRef = useRef(false)
+  const firstGalleryLoadRef = useRef(true)
   const dragRafRef = useRef(null)
   const pendingDragXRef = useRef(0)
 
@@ -428,6 +430,9 @@ function App() {
     }
 
     galleryRequestInFlightRef.current = true
+    if (firstGalleryLoadRef.current) {
+      setGalleryLoading(true)
+    }
 
     try {
       let activeSessionToken = sessionToken
@@ -456,26 +461,29 @@ function App() {
         if (!cappedItems.length) return 0
         return index % cappedItems.length
       })
+      firstGalleryLoadRef.current = false
     } catch {
       setGalleryMessage('Unable to load gallery right now. Please retry in a moment.')
     } finally {
+      setGalleryLoading(false)
       galleryRequestInFlightRef.current = false
     }
   }, [sessionToken, bootstrapSessionFromSavedToken])
 
   useEffect(() => {
     if (!galleryMode) {
+      firstGalleryLoadRef.current = true
       return
     }
 
     loadGallery()
     const poll = window.setInterval(() => {
-      if (document.visibilityState === 'visible') {
+      if (document.visibilityState === 'visible' && !uploading) {
         loadGallery()
       }
     }, 15000)
     return () => window.clearInterval(poll)
-  }, [galleryMode, sessionToken, loadGallery])
+  }, [galleryMode, sessionToken, loadGallery, uploading])
 
   useEffect(() => {
     if (swipeHintSeen) return
@@ -616,7 +624,7 @@ function App() {
     }
 
     setUploading(true)
-    setUploadJobs(imageFiles.map((f) => ({ name: f.name, status: 'pending', error: '' })))
+    setUploadJobs(imageFiles.map((f) => ({ name: f.name, status: 'pending', error: '', file: f })))
 
     let doneCount = 0
     for (let i = 0; i < imageFiles.length; i++) {
@@ -638,6 +646,40 @@ function App() {
       loadGallery()
     }
     event.target.value = ''
+  }
+
+  const retryFailedUploads = async () => {
+    if (!sessionToken || uploading) {
+      return
+    }
+    const failed = uploadJobs
+      .map((job, index) => ({ ...job, index }))
+      .filter((job) => job.status === 'error' && job.file)
+
+    if (!failed.length) {
+      return
+    }
+
+    setUploading(true)
+    let retried = 0
+
+    for (const job of failed) {
+      setUploadJobs((jobs) => jobs.map((j, idx) => idx === job.index ? { ...j, status: 'uploading', error: '' } : j))
+      try {
+        await uploadOne(job.file)
+        retried += 1
+        setUploadJobs((jobs) => jobs.map((j, idx) => idx === job.index ? { ...j, status: 'done' } : j))
+      } catch (retryError) {
+        setUploadJobs((jobs) => jobs.map((j, idx) => idx === job.index ? { ...j, status: 'error', error: retryError?.message || 'Failed' } : j))
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 0))
+    }
+
+    setUploading(false)
+    setGalleryMessage(retried ? `Retried ${retried} photo(s) successfully.` : 'Retry failed. Please try again.')
+    if (retried > 0) {
+      loadGallery()
+    }
   }
 
   const visibleGalleryItems = useMemo(
@@ -1115,6 +1157,7 @@ function App() {
 
   if (galleryMode) {
     const cardComments = drawerPhotoId ? (comments[drawerPhotoId] || []) : []
+    const failedJobsCount = uploadJobs.filter((job) => job.status === 'error').length
 
     return (
       <main className="shell gallery-shell">
@@ -1148,6 +1191,20 @@ function App() {
                 </li>
               ))}
             </ul>
+          ) : null}
+
+          {failedJobsCount > 0 ? (
+            <button className="secondary retry-btn" disabled={uploading} onClick={retryFailedUploads}>
+              {uploading ? 'Retrying…' : `Retry Failed Uploads (${failedJobsCount})`}
+            </button>
+          ) : null}
+
+          {galleryLoading && !currentCard ? (
+            <div className="gallery-skeleton">
+              <div className="gallery-skeleton-img" />
+              <div className="gallery-skeleton-line" />
+              <div className="gallery-skeleton-line short" />
+            </div>
           ) : null}
 
           {visibleGalleryItems.length > 0 ? (
