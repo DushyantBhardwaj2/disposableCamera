@@ -1,8 +1,15 @@
+:root {
+  --bg-top: #fff8ec;
+  --bg-mid: #ffe7d2;
+  --bg-bottom: #f6dac0;
+  --ink: #2d1808;
+}
+
 body {
-  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  font-family: "Avenir Next", "Trebuchet MS", "Segoe UI", sans-serif;
   margin: 0;
-  background: radial-gradient(circle at top, #fff8ec, #ffe7d2 40%, #f6dac0 100%);
-  color: #2d1808;
+  background: radial-gradient(circle at top, var(--bg-top), var(--bg-mid) 40%, var(--bg-bottom) 100%);
+  color: var(--ink);
 }
 
 #root {

@@ -813,7 +813,7 @@ function App() {
                   className="comment-toggle"
                   onClick={() => drawerPhotoId === currentCard.id ? closeDrawer() : openDrawer(currentCard.id)}
                 >
-                  💬 {(comments[currentCard.id] || []).length || ''}
+                  Comments ({(comments[currentCard.id] || []).length})
                 </button>
               </div>
               <div className="swipe-actions">
