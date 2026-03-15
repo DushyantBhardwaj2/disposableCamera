@@ -60,6 +60,7 @@ function App() {
   const [newFamilySlug, setNewFamilySlug] = useState('')
   const [newFamilyToken, setNewFamilyToken] = useState('')
   const [creatingFamily, setCreatingFamily] = useState(false)
+  const [swipeHintSeen, setSwipeHintSeen] = useState(() => !!getStoredValue('swipe_hint_seen'))
 
   useEffect(() => {
     // Warm up Render on first page load to reduce cold-start delay for user actions.
@@ -72,7 +73,7 @@ function App() {
     <nav className="top-ribbon">
       <div className="top-ribbon-inner">
         <a className={`top-ribbon-link ${!adminMode && !galleryMode ? 'active' : ''}`} href={guestHref}>Guest</a>
-        <a className={`top-ribbon-link ${adminMode ? 'active' : ''}`} href="/admin/moderation">Admin</a>
+        {adminMode ? <a className="top-ribbon-link active" href="/admin/moderation">Admin</a> : null}
         <a className={`top-ribbon-link ${galleryMode ? 'active' : ''}`} href="/gallery">Gallery</a>
       </div>
     </nav>
@@ -331,6 +332,15 @@ function App() {
     const poll = window.setInterval(loadGallery, 15000)
     return () => window.clearInterval(poll)
   }, [galleryMode, sessionToken, loadGallery])
+
+  useEffect(() => {
+    if (swipeHintSeen) return
+    const t = window.setTimeout(() => {
+      setSwipeHintSeen(true)
+      setStoredValue('swipe_hint_seen', '1')
+    }, 4000)
+    return () => window.clearTimeout(t)
+  }, [swipeHintSeen])
 
   const startSession = async () => {
     setStartingSession(true)
@@ -642,7 +652,8 @@ function App() {
       <main className="shell">
         {topRibbon}
         <section className="card">
-          <h1>Checking your QR link...</h1>
+          <div className="spinner" />
+          <p className="hint">Getting your access ready…</p>
         </section>
       </main>
     )
@@ -653,7 +664,6 @@ function App() {
       <main className="shell admin-shell">
         {topRibbon}
         <section className="card admin-card">
-          <p className="eyebrow">Milestone 4</p>
           <h1>Moderation Dashboard</h1>
 
           {!adminToken ? (
@@ -677,7 +687,7 @@ function App() {
                 <button className="primary small" onClick={() => setUploadsEnabled(!uploadEnabled)}>
                   Uploads: {uploadEnabled ? 'ON' : 'OFF'}
                 </button>
-                <button className="primary small" onClick={seedDemoApprovedPhoto}>Seed Demo Photo</button>
+                {import.meta.env.DEV ? <button className="primary small" onClick={seedDemoApprovedPhoto}>Seed Demo Photo</button> : null}
               </div>
 
               <div className="family-create">
@@ -754,13 +764,16 @@ function App() {
         ) : null}
 
         <section className="card gallery-card">
-          <p className="eyebrow">Live Gallery</p>
-          <h1>Swipe Through Approved Photos</h1>
+          <p className="eyebrow">Shivani &amp; Nishant · 12 Dec 2026</p>
+          <h1>The Wedding Album 📸</h1>
           {!sessionToken ? (
             <p className="error">Start a guest session first via your family QR link.</p>
           ) : null}
           {galleryMessage ? <p className="upload-note">{galleryMessage}</p> : null}
 
+          {visibleGalleryItems.length > 0 ? (
+            <p className="photo-counter">{(galleryIndex % visibleGalleryItems.length) + 1} / {visibleGalleryItems.length}</p>
+          ) : null}
           {currentCard ? (
             <article
               className="swipe-card"
@@ -770,6 +783,13 @@ function App() {
               onPointerUp={onCardPointerUp}
               onPointerCancel={onCardPointerCancel}
             >
+              {!swipeHintSeen ? (
+                <div className="swipe-hint-overlay">
+                  <p>👈 Swipe left to skip</p>
+                  <p>Swipe right to like 👉</p>
+                  <p>Tap photo to expand</p>
+                </div>
+              ) : null}
               <div className="swipe-overlay-stamp like-stamp" style={{ opacity: likeOpacity }}>LIKE</div>
               <div className="swipe-overlay-stamp skip-stamp" style={{ opacity: skipOpacity }}>NOPE</div>
               <div className="swipe-image-wrap">
@@ -801,7 +821,7 @@ function App() {
                 <button className="primary small" onClick={() => triggerFly('like')}>Like</button>
                 <button className="primary small" onClick={() => triggerFly('superlike')}>Super</button>
               </div>
-              <p className="tiny hint">Drag or swipe to react • tap image to expand.</p>
+
 
               {drawerPhotoId === currentCard.id ? (
                 <div className="comment-drawer">
@@ -829,7 +849,7 @@ function App() {
               ) : null}
             </article>
           ) : (
-            <p className="hint">No approved photos yet. Ask moderators to approve pending uploads.</p>
+            <p className="hint">No photos yet — check back soon after some memories are shared! 🎊</p>
           )}
         </section>
       </main>
@@ -840,14 +860,14 @@ function App() {
     <main className="shell">
       {topRibbon}
       <section className="card">
-        <p className="eyebrow">Milestone 1 + 2</p>
-        <h1>Wedding Photo Guest Entry</h1>
+        <p className="eyebrow">Shivani &amp; Nishant · 12 Dec 2026</p>
+        <h1>{sessionToken && family ? `Welcome, ${family.name}! 🎉` : 'Capture the Moment 📸'}</h1>
 
         {error ? (
           <p className="error">{error}</p>
-        ) : family ? (
+        ) : family && !sessionToken ? (
           <>
-            <p className="hint">Welcome {family.name}. Enter your name (optional) to start.</p>
+            <p className="hint">Enter your name (optional) to get started.</p>
             <input
               value={guestName}
               onChange={(event) => setGuestName(event.target.value)}
@@ -855,46 +875,30 @@ function App() {
               placeholder="Your name (optional)"
               className="name-input"
             />
-            <button className="primary" onClick={startSession} disabled={startingSession || !!sessionToken}>
-              {sessionToken ? 'Session Started' : startingSession ? 'Starting...' : 'Start Session'}
+            <button className="primary" onClick={startSession} disabled={startingSession}>
+              {startingSession ? 'Starting...' : 'Start Session'}
             </button>
           </>
         ) : null}
 
-        <div className="status-grid">
-          <div>
-            <span className="label">Family Token</span>
-            <span className="value">{token || 'N/A'}</span>
-          </div>
-          <div>
-            <span className="label">Family</span>
-            <span className="value">{family?.name || 'Not validated'}</span>
-          </div>
-          <div>
-            <span className="label">Session</span>
-            <span className="value">{sessionToken ? 'Active' : 'Not started'}</span>
-          </div>
-        </div>
-
         {sessionToken ? (
           <>
-            <p className="success">Session token stored. Milestone 2 guest access flow is working.</p>
             {uploadJobs.length > 0 ? (
               <ul className="upload-progress-list">
                 {uploadJobs.map((job, idx) => (
                   <li key={idx} className={`upload-job upload-job--${job.status}`}>
                     <span className="upload-job-name">{job.name}</span>
                     <span className="upload-job-status">
-                      {job.status === 'pending' && '⏳ Waiting'}
-                      {job.status === 'uploading' && '⬆️ Uploading…'}
-                      {job.status === 'done' && '✅ Done'}
-                      {job.status === 'error' && `❌ ${job.error}`}
+                      {job.status === 'pending' && 'Waiting'}
+                      {job.status === 'uploading' && 'Uploading…'}
+                      {job.status === 'done' && 'Done'}
+                      {job.status === 'error' && `Failed: ${job.error}`}
                     </span>
                   </li>
                 ))}
               </ul>
             ) : uploadMessage ? <p className="upload-note">{uploadMessage}</p> : null}
-            <a className="gallery-link" href="/gallery">Open Swipe Gallery</a>
+            <a className="primary gallery-nav-btn" href="/gallery">View the Wedding Album →</a>
           </>
         ) : null}
       </section>
@@ -908,6 +912,7 @@ function App() {
           onChange={onFilesSelected}
         />
         {uploading ? 'Uploading...' : 'Upload Photos'}
+        <span className="fab-consent">By uploading you allow the couple to keep &amp; display your photos</span>
       </label>
     </main>
   )

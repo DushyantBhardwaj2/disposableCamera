@@ -516,3 +516,71 @@ h1 {
 .upload-job--uploading .upload-job-status { color: #b45309; }
 
 .swipe-image { cursor: zoom-in; }
+
+/* Spinner */
+.spinner {
+  width: 36px;
+  height: 36px;
+  border: 3px solid #f1dcc3;
+  border-top-color: #e25822;
+  border-radius: 50%;
+  margin: 12px auto 14px;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Photo counter in gallery */
+.photo-counter {
+  text-align: center;
+  font-size: 13px;
+  color: #7d614a;
+  margin: 0 0 8px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+/* First-time swipe hint overlay */
+.swipe-hint-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background: rgba(30, 14, 4, 0.72);
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.swipe-hint-overlay p {
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 700;
+  margin: 0;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.5);
+}
+
+/* Consent text inside upload FAB */
+.fab-consent {
+  display: block;
+  font-size: 10px;
+  font-weight: 400;
+  opacity: 0.8;
+  text-align: center;
+  margin-top: 4px;
+  line-height: 1.3;
+  max-width: 200px;
+}
+
+/* Gallery nav button (styled link) */
+.gallery-nav-btn {
+  display: block;
+  text-align: center;
+  text-decoration: none;
+  margin-top: 14px;
+}
