@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "https://disposable-camera-api.onrender.com"
@@ -40,6 +40,41 @@ const fetchWithTimeout = async (url, options = {}, timeoutMs = 12000) => {
     window.clearTimeout(timer)
   }
 }
+
+const UploadProgressList = memo(function UploadProgressList({ jobs }) {
+  if (!jobs.length) {
+    return null
+  }
+
+  return (
+    <ul className="upload-progress-list">
+      {jobs.map((job) => (
+        <li key={job.id} className={`upload-job upload-job--${job.status}`}>
+          <span className="upload-job-name">{job.name}</span>
+          <span className="upload-job-status">
+            {job.status === 'pending' && 'Waiting'}
+            {job.status === 'uploading' && 'Uploading…'}
+            {job.status === 'done' && 'Done'}
+            {job.status === 'error' && `Failed: ${job.error}`}
+          </span>
+        </li>
+      ))}
+    </ul>
+  )
+})
+
+const GalleryLightbox = memo(function GalleryLightbox({ url, onClose }) {
+  if (!url) {
+    return null
+  }
+
+  return (
+    <div className="lightbox" onClick={onClose}>
+      <button className="lightbox-close" onClick={onClose} aria-label="Close">✕</button>
+      <img src={url} alt="Full size" className="lightbox-img" draggable={false} />
+    </div>
+  )
+})
 
 function App() {
   const pathname = window.location.pathname
@@ -1063,11 +1098,15 @@ function App() {
     setLightboxUrl(url)
   }
 
+  const closeLightbox = useCallback(() => {
+    setLightboxUrl(null)
+  }, [])
+
   useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') setLightboxUrl(null) }
+    const onKey = (e) => { if (e.key === 'Escape') closeLightbox() }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  }, [closeLightbox])
 
   if (loading) {
     return (
@@ -1281,12 +1320,7 @@ function App() {
     return (
       <main className="shell gallery-shell">
         {topRibbon}
-        {lightboxUrl ? (
-          <div className="lightbox" onClick={() => setLightboxUrl(null)}>
-            <button className="lightbox-close" onClick={() => setLightboxUrl(null)} aria-label="Close">✕</button>
-            <img src={lightboxUrl} alt="Full size" className="lightbox-img" draggable={false} />
-          </div>
-        ) : null}
+        <GalleryLightbox url={lightboxUrl} onClose={closeLightbox} />
 
         <section className="card gallery-card">
           <p className="eyebrow">Shivani &amp; Nishant · 12 Dec 2026</p>
@@ -1296,21 +1330,7 @@ function App() {
           ) : null}
           {galleryMessage ? <p className="upload-note">{galleryMessage}</p> : null}
 
-          {uploadJobs.length > 0 ? (
-            <ul className="upload-progress-list">
-              {uploadJobs.map((job) => (
-                <li key={job.id} className={`upload-job upload-job--${job.status}`}>
-                  <span className="upload-job-name">{job.name}</span>
-                  <span className="upload-job-status">
-                    {job.status === 'pending' && 'Waiting'}
-                    {job.status === 'uploading' && 'Uploading…'}
-                    {job.status === 'done' && 'Done'}
-                    {job.status === 'error' && `Failed: ${job.error}`}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          ) : null}
+          <UploadProgressList jobs={uploadJobs} />
 
           {failedJobsCount > 0 ? (
             <button className="secondary retry-btn" disabled={uploading} onClick={retryFailedUploads}>
