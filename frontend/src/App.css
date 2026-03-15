@@ -597,6 +597,36 @@ h1 {
   gap: 8px;
 }
 
+.family-qr-list {
+  margin-top: 10px;
+  display: grid;
+  gap: 10px;
+}
+
+.family-qr-card {
+  border: 1px solid #efd9bd;
+  background: #fff;
+  border-radius: 10px;
+  padding: 10px;
+}
+
+.family-qr-title {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: #3d2c1e;
+}
+
+.family-qr-image {
+  margin-top: 8px;
+  width: 180px;
+  max-width: 100%;
+  border-radius: 8px;
+  border: 1px solid #efd9bd;
+  background: #fff;
+  padding: 6px;
+}
+
 .small {
   width: auto;
   padding: 8px 12px;

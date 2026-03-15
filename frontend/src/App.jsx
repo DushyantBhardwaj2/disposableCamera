@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import jsQR from 'jsqr'
+import QRCode from 'qrcode'
 import './App.css'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "https://disposable-camera-api.onrender.com"
@@ -181,6 +182,8 @@ function App() {
   const [runningOpsChecks, setRunningOpsChecks] = useState(false)
   const [diagCaptureRaw, setDiagCaptureRaw] = useState(false)
   const [adminFamilies, setAdminFamilies] = useState([])
+  const [familyQrImages, setFamilyQrImages] = useState({})
+  const [familyQrLoading, setFamilyQrLoading] = useState({})
   const [uploadEnabled, setUploadEnabled] = useState(true)
   const [galleryItems, setGalleryItems] = useState([])
   const [galleryIndex, setGalleryIndex] = useState(0)
@@ -914,10 +917,65 @@ function App() {
       setNewFamilyName('')
       setNewFamilySlug('')
       setNewFamilyToken('')
+      await loadAdminFamilies(adminToken)
     } finally {
       setCreatingFamily(false)
     }
   }
+
+  const buildFamilyJoinUrl = useCallback((qrToken) => {
+    const normalizedOrigin = String(window.location.origin || '').replace(/\/$/, '')
+    return `${normalizedOrigin}/f/${encodeURIComponent(String(qrToken || '').trim())}`
+  }, [])
+
+  const generateFamilyQr = useCallback(async (family) => {
+    const token = String(family?.qr_token || '').trim()
+    if (!token) {
+      setAdminMessage('Family QR token missing')
+      return
+    }
+
+    if (familyQrImages[token]) {
+      return
+    }
+
+    setFamilyQrLoading((prev) => ({ ...prev, [token]: true }))
+    try {
+      const joinUrl = buildFamilyJoinUrl(token)
+      const dataUrl = await QRCode.toDataURL(joinUrl, {
+        width: 320,
+        margin: 1,
+        errorCorrectionLevel: 'M',
+      })
+      setFamilyQrImages((prev) => ({ ...prev, [token]: dataUrl }))
+      setAdminMessage(`QR generated for ${family.name}`)
+    } catch {
+      setAdminMessage('Unable to generate QR right now')
+    } finally {
+      setFamilyQrLoading((prev) => ({ ...prev, [token]: false }))
+    }
+  }, [buildFamilyJoinUrl, familyQrImages])
+
+  const downloadFamilyQr = useCallback((family) => {
+    const token = String(family?.qr_token || '').trim()
+    const dataUrl = familyQrImages[token]
+    if (!dataUrl) {
+      setAdminMessage('Generate QR first')
+      return
+    }
+
+    const safeName = String(family?.slug || family?.name || token || 'family')
+      .toLowerCase()
+      .replace(/[^a-z0-9-_]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'family'
+
+    const link = document.createElement('a')
+    link.href = dataUrl
+    link.download = `${safeName}-qr.png`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+  }, [familyQrImages])
 
   const deletePhoto = useCallback(async (photoId) => {
     if (!adminToken) {
@@ -1836,6 +1894,34 @@ function App() {
                       <button className="primary small" disabled={!newFamilyName.trim() || creatingFamily} onClick={createFamily}>
                         {creatingFamily ? 'Creating…' : 'Create Family'}
                       </button>
+                    </div>
+                    <p className="hint tiny">Family links will look like: /f/&lt;token&gt;</p>
+                    <div className="family-qr-list">
+                      {adminFamilies.length === 0 ? <p className="hint tiny">No families available yet.</p> : null}
+                      {adminFamilies.map((family) => {
+                        const token = String(family.qr_token || '').trim()
+                        const joinUrl = buildFamilyJoinUrl(token)
+                        const qrDataUrl = familyQrImages[token]
+                        const loadingQr = Boolean(familyQrLoading[token])
+                        return (
+                          <article key={family.id} className="family-qr-card">
+                            <p className="family-qr-title">{family.name}</p>
+                            <p className="hint tiny">Token: {token || 'N/A'}</p>
+                            <p className="hint tiny">URL: {joinUrl}</p>
+                            <div className="admin-actions">
+                              <button className="primary small" disabled={loadingQr} onClick={() => generateFamilyQr(family)}>
+                                {loadingQr ? 'Generating…' : (qrDataUrl ? 'Regenerate QR' : 'Generate QR')}
+                              </button>
+                              <button className="secondary small" disabled={!qrDataUrl} onClick={() => downloadFamilyQr(family)}>
+                                Download QR
+                              </button>
+                            </div>
+                            {qrDataUrl ? (
+                              <img className="family-qr-image" src={qrDataUrl} alt={`QR for ${family.name}`} />
+                            ) : null}
+                          </article>
+                        )
+                      })}
                     </div>
                   </div>
                 ) : null}
