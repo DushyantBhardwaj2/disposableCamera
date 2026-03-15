@@ -84,7 +84,7 @@ function App() {
         <a className={`top-ribbon-link ${introMode ? 'active' : ''}`} href="/">Home</a>
         <a className={`top-ribbon-link ${scanMode ? 'active' : ''}`} href="/scan">Scan</a>
         <a className={`top-ribbon-link ${galleryMode ? 'active' : ''}`} href="/gallery">Gallery</a>
-        {adminMode ? <a className="top-ribbon-link active" href="/admin/moderation">Admin</a> : null}
+        <a className={`top-ribbon-link ${adminMode ? 'active' : ''}`} href="/admin/moderation">Admin</a>
       </div>
     </nav>
   )
@@ -1170,6 +1170,7 @@ function App() {
           <a className="primary gallery-nav-btn" href="/scan">Scan QR to Join</a>
           <button className="secondary" onClick={() => navigate('/scan')}>Enter code manually</button>
         </div>
+        <p className="hint tiny">Admin? Open <a href="/admin/moderation">/admin/moderation</a></p>
       </section>
     </main>
   )
