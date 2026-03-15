@@ -306,7 +306,8 @@ function App() {
       setAdminMessage(data?.message || 'Bulk approve failed')
       return
     }
-    setPendingItems((items) => items.filter((x) => !selectedIds.includes(x.id)))
+    const selectedSet = new Set(selectedIds)
+    setPendingItems((items) => items.filter((x) => !selectedSet.has(x.id)))
     setSelectedIds([])
     setAdminMessage(`Approved ${data.updated} photo(s)`)
   }
@@ -755,6 +756,12 @@ function App() {
     () => galleryItems.filter((item) => !brokenPhotoIdSet.has(item.id)),
     [galleryItems, brokenPhotoIdSet]
   )
+  const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds])
+  const failedJobsCount = useMemo(
+    () => uploadJobs.reduce((count, job) => count + (job.status === 'error' ? 1 : 0),
+      0),
+    [uploadJobs]
+  )
   const currentCard = visibleGalleryItems.length
     ? visibleGalleryItems[galleryIndex % visibleGalleryItems.length]
     : null
@@ -1133,7 +1140,7 @@ function App() {
                           <label className="checkbox-row">
                             <input
                               type="checkbox"
-                              checked={selectedIds.includes(item.id)}
+                              checked={selectedIdSet.has(item.id)}
                               onChange={(event) => {
                                 if (event.target.checked) {
                                   setSelectedIds((ids) => [...ids, item.id])
@@ -1270,7 +1277,6 @@ function App() {
 
   if (galleryMode) {
     const cardComments = drawerPhotoId ? (comments[drawerPhotoId] || []) : []
-    const failedJobsCount = uploadJobs.filter((job) => job.status === 'error').length
 
     return (
       <main className="shell gallery-shell">
@@ -1292,8 +1298,8 @@ function App() {
 
           {uploadJobs.length > 0 ? (
             <ul className="upload-progress-list">
-              {uploadJobs.map((job, idx) => (
-                <li key={idx} className={`upload-job upload-job--${job.status}`}>
+              {uploadJobs.map((job) => (
+                <li key={job.id} className={`upload-job upload-job--${job.status}`}>
                   <span className="upload-job-name">{job.name}</span>
                   <span className="upload-job-status">
                     {job.status === 'pending' && 'Waiting'}
