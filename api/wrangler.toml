@@ -1,3 +1,5 @@
+# Legacy/local Cloudflare config retained for experiments.
+# Production deployment uses Render Node runtime with `npm run build` + `node dist/index.js`.
 name = "wedding-photo-api"
 main = "src/index.ts"
 compatibility_date = "2026-03-14"

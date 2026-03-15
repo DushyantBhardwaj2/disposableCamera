@@ -253,8 +253,11 @@ Completed in this session:
 - Approved gallery API added and session-protected.
 - Photo reaction API added and validated.
 - Frontend /gallery route added with polling and swipe-style interactions.
+- API hardening added: upload MIME/size validation and in-memory rate limiting for admin login, uploads, and comments.
+- API family-scope guards added for reactions and comments to prevent cross-family access.
+- Deployment docs aligned to Render + Firebase production stack.
+- Frontend README replaced with project-specific setup/build/deploy instructions.
 
 Pending next:
 - Add stronger visual swipe physics (drag card transforms) for a more native Bumble-like feel.
-- Add real image previews in moderation cards when R2 object URLs are available.
-- Add comments placeholder drawer behavior for swipe-up interaction.
+- Improve swipe-up drawer behavior polish for comments interaction.

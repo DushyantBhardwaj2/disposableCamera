@@ -1,16 +1,67 @@
-# React + Vite
+# disposableCamera Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React + Vite frontend for the wedding photo experience.
 
-Currently, two official plugins are available:
+## Features Implemented
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- Family QR-based guest entry via `/f/:token`
+- Guest session start with optional name
+- Multi-photo upload with client compression and disposable-camera style transform
+- Admin moderation dashboard at `/admin/moderation`
+- Approved gallery with swipe interactions, reactions, and comments drawer
 
-## React Compiler
+## Local Development
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+1. Install dependencies:
 
-## Expanding the ESLint configuration
+```bash
+npm install
+```
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+1. Set API base URL in `.env.example` or local env file:
+
+`VITE_API_BASE_URL=http://127.0.0.1:8787`
+
+Use `.env.local` to override API URL for local runs when needed.
+
+1. Start frontend:
+
+```bash
+npm run dev
+```
+
+## Build and Checks
+
+```bash
+npm run lint
+npm run typecheck
+npm run build
+```
+
+## Production
+
+- Set `VITE_API_BASE_URL` in `frontend/.env.production` to your Render backend URL.
+- Deploy using Firebase Hosting (see root deployment docs).
+
+## Production Deployment Architecture
+
+User -> Firebase Hosting frontend -> Render API -> AWS S3 and SQLite metadata DB
+
+No localhost dependency is required in production.
+
+## Production API
+
+`VITE_API_BASE_URL=https://disposable-camera-api.onrender.com`
+
+## Environment Variables
+
+- `.env.production` is loaded automatically by Vite during `npm run build`.
+- `.env.local` can be used for local development overrides.
+- `.env.example` documents local defaults.
+
+## Firebase Deployment Steps
+
+```bash
+npm run build
+firebase deploy --only hosting
+```

@@ -1,8 +1,8 @@
-> This project currently uses Render for backend hosting. Google Cloud Run is NOT part of the production infrastructure.
+> Production backend is Render (Node/Express). Do not use `wrangler deploy` for production.
 
 # Deployment Steps
 
-## SECTION 1 - Backend Deployment (Render)
+## Section 1 - Backend Deployment (Render)
 
 1. Push repository to GitHub.
 2. Create a Render Web Service.
@@ -11,14 +11,24 @@
    - Build command: `npm install && npm run build`
    - Start command: `node dist/index.js`
 4. Add environment variables from `api/.env.example`.
+5. Deploy and verify startup logs include API boot message.
 
-Render will produce a URL like:
+Render URL format:
 
 `https://disposable-camera-api.onrender.com`
 
-## SECTION 2 - Frontend Deployment (Firebase)
+## Section 2 - Backend Post-Deploy Verification
 
-1. Set the frontend backend URL in `frontend/.env.production`:
+1. Check health endpoint:
+   - `GET <render-url>/api/health` should return `status: ok`.
+2. Verify migrations are applied automatically:
+   - `GET <render-url>/api` should list comments and moderation routes.
+   - Create one test session and call comments endpoints to confirm `photo_comments` table is active.
+3. Verify admin login and upload toggle routes.
+
+## Section 3 - Frontend Deployment (Firebase)
+
+1. Set backend URL in `frontend/.env.production`:
 
    `VITE_API_BASE_URL=<Render backend URL>`
 
@@ -29,3 +39,11 @@ cd frontend
 npm run build
 firebase deploy --only hosting
 ```
+
+## Section 4 - Frontend Smoke Test
+
+1. Open a family URL: `/f/<token>`.
+2. Start guest session.
+3. Upload one photo and confirm it appears in pending moderation.
+4. Approve from `/admin/moderation`.
+5. Confirm it appears in `/gallery`.

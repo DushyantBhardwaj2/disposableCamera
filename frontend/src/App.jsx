@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8787'
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "https://disposable-camera-api.onrender.com"
 const DEV_FALLBACK_QR_TOKEN = 'BALODHI-QR-2026'
 
 const parseTokenFromPath = (pathname) => {
@@ -56,6 +56,15 @@ function App() {
   const [commentText, setCommentText] = useState('')
   const [lightboxUrl, setLightboxUrl] = useState(null)
   const [uploadJobs, setUploadJobs] = useState([])
+  const [newFamilyName, setNewFamilyName] = useState('')
+  const [newFamilySlug, setNewFamilySlug] = useState('')
+  const [newFamilyToken, setNewFamilyToken] = useState('')
+  const [creatingFamily, setCreatingFamily] = useState(false)
+
+  useEffect(() => {
+    // Warm up Render on first page load to reduce cold-start delay for user actions.
+    fetch(`${API_BASE_URL}/api/health`).catch(() => {})
+  }, [])
 
   const activeGuestToken = token || getStoredValue('family_qr_token') || DEV_FALLBACK_QR_TOKEN
   const guestHref = `/f/${encodeURIComponent(activeGuestToken)}`
@@ -210,6 +219,30 @@ function App() {
       return
     }
     setAdminMessage(`Seeded demo approved photo #${data.photo_id}`)
+  }
+
+  const createFamily = async () => {
+    if (!adminToken || !newFamilyName.trim()) return
+    setCreatingFamily(true)
+    setAdminMessage('')
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/admin/families/create`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ admin_token: adminToken, name: newFamilyName, slug: newFamilySlug, qr_token: newFamilyToken }),
+      })
+      const data = await response.json()
+      if (!response.ok) {
+        setAdminMessage(data?.message || 'Failed to create family')
+        return
+      }
+      setAdminMessage(`✅ Family created: ${data.family.name} — QR token: ${data.family.qr_token} — URL: /f/${data.family.qr_token}`)
+      setNewFamilyName('')
+      setNewFamilySlug('')
+      setNewFamilyToken('')
+    } finally {
+      setCreatingFamily(false)
+    }
   }
 
   useEffect(() => {
@@ -645,6 +678,18 @@ function App() {
                   Uploads: {uploadEnabled ? 'ON' : 'OFF'}
                 </button>
                 <button className="primary small" onClick={seedDemoApprovedPhoto}>Seed Demo Photo</button>
+              </div>
+
+              <div className="family-create">
+                <h2 className="section-heading">Add New Family</h2>
+                <div className="family-create-grid">
+                  <input className="name-input" placeholder="Family name *" value={newFamilyName} onChange={(e) => setNewFamilyName(e.target.value)} />
+                  <input className="name-input" placeholder="Slug (optional, auto-generated)" value={newFamilySlug} onChange={(e) => setNewFamilySlug(e.target.value)} />
+                  <input className="name-input" placeholder="QR token (optional, auto-generated)" value={newFamilyToken} onChange={(e) => setNewFamilyToken(e.target.value)} />
+                  <button className="primary small" disabled={!newFamilyName.trim() || creatingFamily} onClick={createFamily}>
+                    {creatingFamily ? 'Creating…' : 'Create Family'}
+                  </button>
+                </div>
               </div>
 
               <div className="moderation-grid">

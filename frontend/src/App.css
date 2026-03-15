@@ -191,6 +191,27 @@ h1 {
   margin-bottom: 14px;
 }
 
+.family-create {
+  margin-bottom: 18px;
+  padding: 14px;
+  background: #fff8f2;
+  border: 1px solid #efd9bd;
+  border-radius: 12px;
+}
+
+.section-heading {
+  font-size: 14px;
+  font-weight: 700;
+  color: #7d614a;
+  text-transform: uppercase;
+  margin: 0 0 10px;
+}
+
+.family-create-grid {
+  display: grid;
+  gap: 8px;
+}
+
 .small {
   width: auto;
   padding: 8px 12px;

@@ -30,13 +30,22 @@ const dataDir = path.join(rootDir, 'data')
 fs.mkdirSync(dataDir, { recursive: true })
 
 const dbPath = process.env.SQLITE_PATH || path.join(dataDir, 'wedding.db')
-const port = Number(process.env.PORT || 8080)
+const PORT = Number(process.env.PORT || 8787)
 const signingSecret = process.env.UPLOAD_SIGNING_SECRET || 'local-dev-signing-secret'
 const adminPassword = process.env.ADMIN_PASSWORD || 'admin123'
+const maxUploadBytes = Number(process.env.MAX_UPLOAD_BYTES || 8 * 1024 * 1024)
 const s3Bucket = process.env.S3_BUCKET || ''
 const s3Region = process.env.S3_REGION || 'ap-south-1'
 const s3Endpoint = process.env.S3_ENDPOINT || undefined
 const s3ForcePathStyle = process.env.S3_FORCE_PATH_STYLE === '1'
+const allowedUploadMimeTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
+
+type RateLimitBucket = {
+  count: number
+  resetAt: number
+}
+
+const rateLimitStore = new Map<string, RateLimitBucket>()
 
 const db = new Database(dbPath)
 db.pragma('foreign_keys = ON')
@@ -51,9 +60,33 @@ const s3Client = s3Bucket
 
 const app = express()
 
+const allowedProdOrigins = new Set([
+  'https://disposable-camera-89a02.web.app',
+  'https://disposable-camera-89a02.firebaseapp.com',
+])
+
+const isDevelopment = process.env.NODE_ENV !== 'production'
+const devOriginRegex = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i
+
 app.use(
   cors({
-    origin: '*',
+    origin: (origin, callback) => {
+      // Allow non-browser/server-to-server requests with no Origin header.
+      if (!origin) {
+        return callback(null, true)
+      }
+
+      if (allowedProdOrigins.has(origin)) {
+        return callback(null, true)
+      }
+
+      if (isDevelopment && devOriginRegex.test(origin)) {
+        return callback(null, true)
+      }
+
+      return callback(new Error('Not allowed by CORS'))
+    },
+    credentials: true,
     methods: ['GET', 'POST', 'OPTIONS'],
     allowedHeaders: ['content-type', 'authorization', 'x-session-token', 'x-admin-token'],
   })
@@ -316,6 +349,54 @@ const requireS3 = (res: Response) => {
   return true
 }
 
+const getRequestIp = (req: Request) => {
+  const xff = String(req.headers['x-forwarded-for'] || '').trim()
+  if (xff) {
+    return xff.split(',')[0].trim()
+  }
+  return req.ip || req.socket.remoteAddress || 'unknown'
+}
+
+const enforceRateLimit = (
+  req: Request,
+  res: Response,
+  key: string,
+  maxRequests: number,
+  windowMs: number
+) => {
+  const now = Date.now()
+  const bucketKey = `${key}:${getRequestIp(req)}`
+  const current = rateLimitStore.get(bucketKey)
+
+  if (!current || now >= current.resetAt) {
+    rateLimitStore.set(bucketKey, { count: 1, resetAt: now + windowMs })
+    return true
+  }
+
+  if (current.count >= maxRequests) {
+    const retryAfter = Math.max(1, Math.ceil((current.resetAt - now) / 1000))
+    res.setHeader('retry-after', String(retryAfter))
+    errorJson(res, 'rate_limited', `Too many requests. Retry in ${retryAfter} seconds.`, 429)
+    return false
+  }
+
+  current.count += 1
+  return true
+}
+
+const ensurePhotoInFamily = (photoId: number, familyId: number) => {
+  const row = db
+    .prepare(
+      `SELECT id
+       FROM photos
+       WHERE id = ? AND family_id = ? AND status = 'approved'
+       LIMIT 1`
+    )
+    .get(photoId, familyId) as { id: number } | undefined
+
+  return !!row
+}
+
 applyMigrations()
 
 app.get(['/', '/api'], (_req, res) => {
@@ -340,6 +421,7 @@ app.get(['/', '/api'], (_req, res) => {
       'POST /api/admin/photos/bulk-approve',
       'GET /api/admin/upload-toggle',
       'POST /api/admin/upload-toggle',
+      'POST /api/admin/families/create',
       'POST /api/dev/seed-approved',
     ],
   })
@@ -430,6 +512,10 @@ app.get('/api/media', async (req, res) => {
 })
 
 app.post('/api/uploads/sign', (req, res) => {
+  if (!enforceRateLimit(req, res, 'uploads_sign', 40, 60_000)) {
+    return
+  }
+
   const sessionResult = requireSession(req, req.body?.session_token)
   if (!sessionResult.ok) {
     return sessionResult.response(res)
@@ -444,6 +530,10 @@ app.post('/api/uploads/sign', (req, res) => {
 
   if (!fileName || !fileType) {
     return errorJson(res, 'missing_fields', 'file_name and file_type are required', 400)
+  }
+
+  if (!allowedUploadMimeTypes.has(fileType.toLowerCase())) {
+    return errorJson(res, 'invalid_file_type', 'Only JPEG, PNG, WEBP and GIF uploads are allowed', 400)
   }
 
   const ext = extensionFromType(fileName, fileType)
@@ -471,6 +561,10 @@ app.post('/api/uploads/direct', async (req, res) => {
     return
   }
 
+  if (!enforceRateLimit(req, res, 'uploads_direct', 30, 60_000)) {
+    return
+  }
+
   const sessionResult = requireSession(req, req.body?.session_token)
   if (!sessionResult.ok) {
     return sessionResult.response(res)
@@ -482,6 +576,10 @@ app.post('/api/uploads/direct', async (req, res) => {
 
   if (!uploadToken || !imageBase64) {
     return errorJson(res, 'missing_fields', 'upload_token and image_base64 are required', 400)
+  }
+
+  if (!allowedUploadMimeTypes.has(mimeType.toLowerCase())) {
+    return errorJson(res, 'invalid_mime_type', 'Only JPEG, PNG, WEBP and GIF uploads are allowed', 400)
   }
 
   const payload = verifySignedPayload(uploadToken)
@@ -514,6 +612,10 @@ app.post('/api/uploads/direct', async (req, res) => {
 
   if (!bytes.length) {
     return errorJson(res, 'invalid_image', 'Decoded image is empty', 400)
+  }
+
+  if (bytes.length > maxUploadBytes) {
+    return errorJson(res, 'file_too_large', `Decoded image exceeds ${maxUploadBytes} bytes`, 413)
   }
 
   await s3Client!.send(
@@ -609,6 +711,10 @@ app.post('/api/photos/:id/reaction', (req, res) => {
     return errorJson(res, 'invalid_reaction', 'Unsupported reaction type', 400)
   }
 
+  if (!ensurePhotoInFamily(photoId, sessionResult.session.family_id)) {
+    return errorJson(res, 'photo_not_accessible', 'Photo not found for this family session', 404)
+  }
+
   db.prepare('INSERT INTO reactions (photo_id, guest_session_id, reaction_type) VALUES (?, ?, ?)').run(
     photoId,
     sessionResult.session.id,
@@ -629,6 +735,10 @@ app.get('/api/photos/:id/comments', (req, res) => {
     return errorJson(res, 'invalid_photo_id', 'Invalid photo id', 400)
   }
 
+  if (!ensurePhotoInFamily(photoId, sessionResult.session.family_id)) {
+    return errorJson(res, 'photo_not_accessible', 'Photo not found for this family session', 404)
+  }
+
   const rows = db
     .prepare(
       `SELECT id, display_name, body, created_at
@@ -643,6 +753,10 @@ app.get('/api/photos/:id/comments', (req, res) => {
 })
 
 app.post('/api/photos/:id/comments', (req, res) => {
+  if (!enforceRateLimit(req, res, 'comments_create', 20, 60_000)) {
+    return
+  }
+
   const sessionResult = requireSession(req, req.body?.session_token)
   if (!sessionResult.ok) {
     return sessionResult.response(res)
@@ -663,6 +777,10 @@ app.post('/api/photos/:id/comments', (req, res) => {
     return errorJson(res, 'too_long', 'Comment must be 500 characters or less', 400)
   }
 
+  if (!ensurePhotoInFamily(photoId, sessionResult.session.family_id)) {
+    return errorJson(res, 'photo_not_accessible', 'Photo not found for this family session', 404)
+  }
+
   const insert = db
     .prepare('INSERT INTO photo_comments (photo_id, guest_session_id, display_name, body) VALUES (?, ?, ?, ?)')
     .run(photoId, sessionResult.session.id, sessionResult.session.display_name || null, body)
@@ -681,12 +799,56 @@ app.post('/api/photos/:id/comments', (req, res) => {
 })
 
 app.post('/api/admin/login', (req, res) => {
+  if (!enforceRateLimit(req, res, 'admin_login', 10, 10 * 60_000)) {
+    return
+  }
+
   const password = String(req.body?.password || '')
   if (password !== adminPassword) {
     return errorJson(res, 'invalid_credentials', 'Invalid admin password', 401)
   }
 
   return json(res, { admin_token: createAdminToken(), expires_in_hours: 8 })
+})
+
+app.post('/api/admin/families/create', (req, res) => {
+  const auth = requireAdmin(req, req.body?.admin_token)
+  if (!auth.ok) return auth.response(res)
+
+  const name = String(req.body?.name || '').trim().slice(0, 80)
+  const slugInput = String(req.body?.slug || '').trim().toLowerCase()
+  const qrInput = String(req.body?.qr_token || '').trim().toUpperCase()
+
+  if (!name) return errorJson(res, 'missing_name', 'name is required', 400)
+
+  const slug = (slugInput || name.toLowerCase())
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60)
+
+  if (!slug) return errorJson(res, 'invalid_slug', 'slug is invalid', 400)
+
+  const qrToken = qrInput || `FAMILY-${crypto.randomUUID().slice(0, 8).toUpperCase()}`
+  if (!/^[A-Z0-9_-]{6,80}$/.test(qrToken)) {
+    return errorJson(res, 'invalid_qr_token', 'qr_token format is invalid', 400)
+  }
+
+  try {
+    const insert = db
+      .prepare('INSERT INTO families (name, slug, qr_token, is_active) VALUES (?, ?, ?, 1)')
+      .run(name, slug, qrToken)
+    return json(
+      res,
+      { family: { id: Number(insert.lastInsertRowid), name, slug, qr_token: qrToken, is_active: 1 } },
+      201
+    )
+  } catch (e) {
+    const message = String((e as Error)?.message || '')
+    if (message.includes('families.slug') || message.includes('families.qr_token')) {
+      return errorJson(res, 'duplicate_family', 'slug or qr_token already exists', 409)
+    }
+    return errorJson(res, 'db_error', 'Could not create family', 500)
+  }
 })
 
 app.get('/api/admin/photos/pending', (req, res) => {
@@ -864,8 +1026,8 @@ app.use((_req, res) => {
   errorJson(res, 'not_found', 'Route not found', 404)
 })
 
-app.listen(port, () => {
-  console.log(`wedding-photo-api running on http://127.0.0.1:${port}`)
+app.listen(PORT, () => {
+  console.log(`Server running on ${PORT}`)
   if (!s3Bucket) {
     console.log('S3 not configured: set S3_BUCKET, S3_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY')
   }
