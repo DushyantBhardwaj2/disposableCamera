@@ -30,7 +30,7 @@ const dataDir = path.join(rootDir, 'data')
 fs.mkdirSync(dataDir, { recursive: true })
 
 const dbPath = process.env.SQLITE_PATH || path.join(dataDir, 'wedding.db')
-const port = Number(process.env.PORT || 8787)
+const port = Number(process.env.PORT || 8080)
 const signingSecret = process.env.UPLOAD_SIGNING_SECRET || 'local-dev-signing-secret'
 const adminPassword = process.env.ADMIN_PASSWORD || 'admin123'
 const s3Bucket = process.env.S3_BUCKET || ''
