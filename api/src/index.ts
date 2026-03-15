@@ -26,10 +26,32 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const rootDir = path.resolve(__dirname, '..')
 const dataDir = path.join(rootDir, 'data')
+const renderDiskPath = String(process.env.RENDER_DISK_PATH || '').trim()
+const sqlitePathInput = String(process.env.SQLITE_PATH || '').trim()
 
 fs.mkdirSync(dataDir, { recursive: true })
 
-const dbPath = process.env.SQLITE_PATH || path.join(dataDir, 'wedding.db')
+const resolveDbPath = () => {
+  if (sqlitePathInput) {
+    if (path.isAbsolute(sqlitePathInput)) {
+      return sqlitePathInput
+    }
+    // If Render disk exists, place relative sqlite path on persistent storage.
+    if (renderDiskPath) {
+      return path.join(renderDiskPath, sqlitePathInput.replace(/^\.\//, ''))
+    }
+    return path.resolve(rootDir, sqlitePathInput)
+  }
+
+  if (renderDiskPath) {
+    return path.join(renderDiskPath, 'wedding.db')
+  }
+
+  return path.join(dataDir, 'wedding.db')
+}
+
+const dbPath = resolveDbPath()
+fs.mkdirSync(path.dirname(dbPath), { recursive: true })
 const PORT = Number(process.env.PORT || 8787)
 const signingSecret = process.env.UPLOAD_SIGNING_SECRET || 'local-dev-signing-secret'
 const adminPassword = process.env.ADMIN_PASSWORD || 'admin123'
@@ -1481,6 +1503,10 @@ app.use((_req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Server running on ${PORT}`)
+  console.log(`SQLite DB path: ${dbPath}`)
+  if (!renderDiskPath) {
+    console.warn('RENDER_DISK_PATH is not set. SQLite may be ephemeral on redeploy in production.')
+  }
   if (!s3Bucket) {
     console.log('S3 not configured: set S3_BUCKET, S3_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY')
   }

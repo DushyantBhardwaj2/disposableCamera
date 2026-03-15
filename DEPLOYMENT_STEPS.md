@@ -10,8 +10,12 @@
    - Root directory: `api`
    - Build command: `npm install && npm run build`
    - Start command: `node dist/index.js`
-4. Add environment variables from `api/.env.example`.
-5. Deploy and verify startup logs include API boot message.
+4. Attach a Render Persistent Disk:
+   - Mount path: `/var/data`
+   - Size: at least 1 GB
+5. Set `SQLITE_PATH=/var/data/wedding.db` in Render environment variables.
+6. Add remaining environment variables from `api/.env.example`.
+7. Deploy and verify startup logs include API boot message and `SQLite DB path: /var/data/wedding.db`.
 
 Render URL format:
 
