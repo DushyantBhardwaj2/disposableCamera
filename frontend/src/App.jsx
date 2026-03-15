@@ -76,6 +76,65 @@ const GalleryLightbox = memo(function GalleryLightbox({ url, onClose }) {
   )
 })
 
+const PendingPhotoItem = memo(function PendingPhotoItem({ item, isSelected, onToggleSelect, onModerate }) {
+  return (
+    <article className="moderation-item">
+      <label className="checkbox-row">
+        <input
+          type="checkbox"
+          checked={isSelected}
+          onChange={(event) => onToggleSelect(item.id, event.target.checked)}
+        />
+        Photo #{item.id}
+      </label>
+      <p className="hint">
+        {item.family_name} {item.guest_name ? `• ${item.guest_name}` : ''}
+      </p>
+      {(item.filtered_url || item.original_url) ? (
+        <img
+          src={item.filtered_url || item.original_url}
+          alt="pending photo thumbnail"
+          className="mod-thumb"
+          loading="lazy"
+          onError={(e) => { e.currentTarget.style.display = 'none' }}
+          draggable={false}
+        />
+      ) : (
+        <div className="mod-thumb mod-thumb-empty" />
+      )}
+      <div className="admin-actions">
+        <button className="primary small" onClick={() => onModerate(item.id, 'approve')}>Approve</button>
+        <button className="danger small" onClick={() => onModerate(item.id, 'reject')}>Reject</button>
+      </div>
+    </article>
+  )
+})
+
+const ApprovedPhotoItem = memo(function ApprovedPhotoItem({ item, onDelete }) {
+  return (
+    <article className="moderation-item">
+      <p className="hint">
+        #{item.id} {item.family_name} {item.guest_name ? `• ${item.guest_name}` : ''}
+      </p>
+      {(item.filtered_url || item.original_url) ? (
+        <img
+          src={item.filtered_url || item.original_url}
+          alt="approved photo"
+          className="mod-thumb"
+          loading="lazy"
+          onError={(e) => { e.currentTarget.style.display = 'none' }}
+          draggable={false}
+        />
+      ) : (
+        <div className="mod-thumb mod-thumb-empty" />
+      )}
+      <div className="admin-actions">
+        <button className="danger small" onClick={() => onDelete(item.id)}>Delete from Gallery</button>
+      </div>
+    </article>
+  )
+})
+
 function App() {
   const pathname = window.location.pathname
   const adminMode = useMemo(() => isAdminRoute(pathname), [pathname])
@@ -302,7 +361,7 @@ function App() {
     setAdminMessage('Admin login successful')
   }
 
-  const moderateOne = async (photoId, action) => {
+  const moderateOne = useCallback(async (photoId, action) => {
     if (!adminToken) {
       return
     }
@@ -322,7 +381,7 @@ function App() {
     setPendingItems((items) => items.filter((x) => x.id !== photoId))
     setSelectedIds((ids) => ids.filter((x) => x !== photoId))
     setAdminMessage(`Photo ${action}d`)
-  }
+  }, [adminToken, handleAdminAuthFailure])
 
   const bulkApprove = async () => {
     if (!adminToken || !selectedIds.length) {
@@ -409,7 +468,7 @@ function App() {
     }
   }
 
-  const deletePhoto = async (photoId) => {
+  const deletePhoto = useCallback(async (photoId) => {
     if (!adminToken) {
       return
     }
@@ -428,7 +487,15 @@ function App() {
     }
     setApprovedItems((items) => items.filter((item) => item.id !== photoId))
     setAdminMessage('Photo removed from gallery')
-  }
+  }, [adminToken, handleAdminAuthFailure])
+
+  const toggleSelectedId = useCallback((photoId, checked) => {
+    if (checked) {
+      setSelectedIds((ids) => [...ids, photoId])
+      return
+    }
+    setSelectedIds((ids) => ids.filter((id) => id !== photoId))
+  }, [])
 
   useEffect(() => {
     const saved = getStoredValue('guest_session_token')
@@ -1175,41 +1242,13 @@ function App() {
                     <div className="moderation-grid">
                       {pendingItems.length === 0 ? <p className="hint">No pending photos.</p> : null}
                       {pendingItems.map((item) => (
-                        <article key={item.id} className="moderation-item">
-                          <label className="checkbox-row">
-                            <input
-                              type="checkbox"
-                              checked={selectedIdSet.has(item.id)}
-                              onChange={(event) => {
-                                if (event.target.checked) {
-                                  setSelectedIds((ids) => [...ids, item.id])
-                                } else {
-                                  setSelectedIds((ids) => ids.filter((id) => id !== item.id))
-                                }
-                              }}
-                            />
-                            Photo #{item.id}
-                          </label>
-                          <p className="hint">
-                            {item.family_name} {item.guest_name ? `• ${item.guest_name}` : ''}
-                          </p>
-                          {(item.filtered_url || item.original_url) ? (
-                            <img
-                              src={item.filtered_url || item.original_url}
-                              alt="pending photo thumbnail"
-                              className="mod-thumb"
-                              loading="lazy"
-                              onError={(e) => { e.currentTarget.style.display = 'none' }}
-                              draggable={false}
-                            />
-                          ) : (
-                            <div className="mod-thumb mod-thumb-empty" />
-                          )}
-                          <div className="admin-actions">
-                            <button className="primary small" onClick={() => moderateOne(item.id, 'approve')}>Approve</button>
-                            <button className="danger small" onClick={() => moderateOne(item.id, 'reject')}>Reject</button>
-                          </div>
-                        </article>
+                        <PendingPhotoItem
+                          key={item.id}
+                          item={item}
+                          isSelected={selectedIdSet.has(item.id)}
+                          onToggleSelect={toggleSelectedId}
+                          onModerate={moderateOne}
+                        />
                       ))}
                     </div>
                   </>
@@ -1223,26 +1262,7 @@ function App() {
                     <div className="moderation-grid">
                       {approvedItems.length === 0 ? <p className="hint">No approved photos.</p> : null}
                       {approvedItems.map((item) => (
-                        <article key={item.id} className="moderation-item">
-                          <p className="hint">
-                            #{item.id} {item.family_name} {item.guest_name ? `• ${item.guest_name}` : ''}
-                          </p>
-                          {(item.filtered_url || item.original_url) ? (
-                            <img
-                              src={item.filtered_url || item.original_url}
-                              alt="approved photo"
-                              className="mod-thumb"
-                              loading="lazy"
-                              onError={(e) => { e.currentTarget.style.display = 'none' }}
-                              draggable={false}
-                            />
-                          ) : (
-                            <div className="mod-thumb mod-thumb-empty" />
-                          )}
-                          <div className="admin-actions">
-                            <button className="danger small" onClick={() => deletePhoto(item.id)}>Delete from Gallery</button>
-                          </div>
-                        </article>
+                        <ApprovedPhotoItem key={item.id} item={item} onDelete={deletePhoto} />
                       ))}
                     </div>
                   </>
