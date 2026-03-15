@@ -106,7 +106,16 @@ const applyMigrations = () => {
 
   for (const fileName of files) {
     const sql = fs.readFileSync(path.join(migrationDir, fileName), 'utf8')
-    db.exec(sql)
+    try {
+      db.exec(sql)
+    } catch (error) {
+      const message = String((error as Error)?.message || '').toLowerCase()
+      // Allow idempotent re-runs for ALTER TABLE ADD COLUMN migrations.
+      if (message.includes('duplicate column name')) {
+        continue
+      }
+      throw error
+    }
   }
 }
 
@@ -389,7 +398,7 @@ const ensurePhotoInFamily = (photoId: number, familyId: number) => {
     .prepare(
       `SELECT id
        FROM photos
-       WHERE id = ? AND family_id = ? AND status = 'approved'
+       WHERE id = ? AND family_id = ? AND status = 'approved' AND is_deleted = 0
        LIMIT 1`
     )
     .get(photoId, familyId) as { id: number } | undefined
@@ -419,6 +428,8 @@ app.get(['/', '/api'], (_req, res) => {
       'POST /api/admin/photos/:id/approve',
       'POST /api/admin/photos/:id/reject',
       'POST /api/admin/photos/bulk-approve',
+      'GET /api/admin/photos/approved',
+      'POST /api/admin/photos/:id/delete',
       'GET /api/admin/upload-toggle',
       'POST /api/admin/upload-toggle',
       'POST /api/admin/families/create',
@@ -673,7 +684,7 @@ app.get('/api/gallery/approved', (req, res) => {
        FROM photos
        JOIN families ON families.id = photos.family_id
        LEFT JOIN guest_sessions ON guest_sessions.id = photos.guest_session_id
-       WHERE photos.status = 'approved' AND photos.family_id = ?
+       WHERE photos.status = 'approved' AND photos.family_id = ? AND photos.is_deleted = 0
        ORDER BY photos.created_at DESC
        LIMIT 300`
     )
@@ -857,6 +868,11 @@ app.get('/api/admin/photos/pending', (req, res) => {
     return auth.response(res)
   }
 
+  const limitInput = Number(req.query.limit || 200)
+  const offsetInput = Number(req.query.offset || 0)
+  const limit = Math.min(Math.max(Number.isFinite(limitInput) ? limitInput : 200, 1), 500)
+  const offset = Math.max(Number.isFinite(offsetInput) ? offsetInput : 0, 0)
+
   const rows = db
     .prepare(
       `SELECT
@@ -869,11 +885,11 @@ app.get('/api/admin/photos/pending', (req, res) => {
        FROM photos
        JOIN families ON families.id = photos.family_id
        LEFT JOIN guest_sessions ON guest_sessions.id = photos.guest_session_id
-       WHERE photos.status = 'pending'
+       WHERE photos.status = 'pending' AND photos.is_deleted = 0
        ORDER BY photos.created_at DESC
-       LIMIT 200`
+       LIMIT ? OFFSET ?`
     )
-    .all() as Array<{
+     .all(limit, offset) as Array<{
     id: number
     original_url: string | null
     filtered_url: string | null
@@ -889,7 +905,7 @@ app.get('/api/admin/photos/pending', (req, res) => {
     filtered_url: toPublicMediaUrl(origin, row.filtered_url),
   }))
 
-  return json(res, { items })
+  return json(res, { items, limit, offset })
 })
 
 app.post('/api/admin/photos/bulk-approve', (req, res) => {
@@ -907,12 +923,85 @@ app.post('/api/admin/photos/bulk-approve', (req, res) => {
     return errorJson(res, 'invalid_ids', 'ids_csv is required', 400)
   }
 
-  for (const id of ids) {
-    db.prepare("UPDATE photos SET status = 'approved' WHERE id = ?").run(id)
-    db.prepare("INSERT INTO moderation_actions (photo_id, action, moderator_name) VALUES (?, 'approve', 'admin')").run(id)
-  }
+  const tx = db.transaction((items: number[]) => {
+    const approveStmt = db.prepare("UPDATE photos SET status = 'approved' WHERE id = ? AND is_deleted = 0")
+    const actionStmt = db.prepare("INSERT INTO moderation_actions (photo_id, action, moderator_name) VALUES (?, 'approve', 'admin')")
+    for (const id of items) {
+      approveStmt.run(id)
+      actionStmt.run(id)
+    }
+  })
+
+  tx(ids)
 
   return json(res, { updated: ids.length })
+})
+
+app.get('/api/admin/photos/approved', (req, res) => {
+  const auth = requireAdmin(req)
+  if (!auth.ok) {
+    return auth.response(res)
+  }
+
+  const limitInput = Number(req.query.limit || 200)
+  const offsetInput = Number(req.query.offset || 0)
+  const limit = Math.min(Math.max(Number.isFinite(limitInput) ? limitInput : 200, 1), 500)
+  const offset = Math.max(Number.isFinite(offsetInput) ? offsetInput : 0, 0)
+
+  const rows = db
+    .prepare(
+      `SELECT
+         photos.id,
+         photos.original_url,
+         photos.filtered_url,
+         photos.created_at,
+         families.name AS family_name,
+         guest_sessions.display_name AS guest_name
+       FROM photos
+       JOIN families ON families.id = photos.family_id
+       LEFT JOIN guest_sessions ON guest_sessions.id = photos.guest_session_id
+       WHERE photos.status = 'approved' AND photos.is_deleted = 0
+       ORDER BY photos.created_at DESC
+       LIMIT ? OFFSET ?`
+    )
+    .all(limit, offset) as Array<{
+    id: number
+    original_url: string | null
+    filtered_url: string | null
+    created_at: string
+    family_name: string
+    guest_name: string | null
+  }>
+
+  const origin = `${req.protocol}://${req.get('host')}`
+  const items = rows.map((row) => ({
+    ...row,
+    original_url: toPublicMediaUrl(origin, row.original_url),
+    filtered_url: toPublicMediaUrl(origin, row.filtered_url),
+  }))
+
+  return json(res, { items, limit, offset })
+})
+
+app.post('/api/admin/photos/:id/delete', (req, res) => {
+  const auth = requireAdmin(req, req.body?.admin_token)
+  if (!auth.ok) {
+    return auth.response(res)
+  }
+
+  const photoId = Number(req.params.id)
+  if (!Number.isFinite(photoId) || photoId <= 0) {
+    return errorJson(res, 'invalid_photo_id', 'Invalid photo id', 400)
+  }
+
+  const update = db.prepare('UPDATE photos SET is_deleted = 1 WHERE id = ?').run(photoId)
+  if (!update.changes) {
+    return errorJson(res, 'not_found', 'Photo not found', 404)
+  }
+
+  db.prepare("INSERT INTO moderation_actions (photo_id, action, moderator_name) VALUES (?, 'delete', 'admin')").run(photoId)
+
+  return json(res, { photo_id: photoId, deleted: true })
 })
 
 app.post('/api/admin/photos/:id/approve', (req, res) => {

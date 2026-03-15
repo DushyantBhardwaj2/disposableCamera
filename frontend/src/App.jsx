@@ -7,13 +7,15 @@ const DEV_FALLBACK_QR_TOKEN = 'BALODHI-QR-2026'
 const parseTokenFromPath = (pathname) => {
   const parts = pathname.split('/').filter(Boolean)
   if (parts.length === 2 && parts[0] === 'f') {
-    return parts[1]
+    return decodeURIComponent(parts[1])
   }
   return ''
 }
 
 const isAdminRoute = (pathname) => pathname.startsWith('/admin/moderation')
 const isGalleryRoute = (pathname) => pathname.startsWith('/gallery')
+const isScanRoute = (pathname) => pathname.startsWith('/scan')
+const isIntroRoute = (pathname) => pathname === '/'
 
 const getStoredValue = (key) => {
   return window.sessionStorage.getItem(key) || window.localStorage.getItem(key) || ''
@@ -28,15 +30,14 @@ function App() {
   const pathname = window.location.pathname
   const adminMode = useMemo(() => isAdminRoute(pathname), [pathname])
   const galleryMode = useMemo(() => isGalleryRoute(pathname), [pathname])
-  const token = useMemo(() => parseTokenFromPath(window.location.pathname), [])
-  const [family, setFamily] = useState(null)
-  const [guestName, setGuestName] = useState('')
+  const scanMode = useMemo(() => isScanRoute(pathname), [pathname])
+  const introMode = useMemo(() => isIntroRoute(pathname), [pathname])
+  const token = useMemo(() => parseTokenFromPath(pathname), [pathname])
+
   const [sessionToken, setSessionToken] = useState(() => getStoredValue('guest_session_token'))
   const [loading, setLoading] = useState(true)
-  const [startingSession, setStartingSession] = useState(false)
   const [error, setError] = useState('')
   const [uploading, setUploading] = useState(false)
-  const [uploadMessage, setUploadMessage] = useState('')
   const [adminPassword, setAdminPassword] = useState('')
   const [adminToken, setAdminToken] = useState(() => getStoredValue('admin_token'))
   const [pendingItems, setPendingItems] = useState([])
@@ -60,50 +61,90 @@ function App() {
   const [newFamilySlug, setNewFamilySlug] = useState('')
   const [newFamilyToken, setNewFamilyToken] = useState('')
   const [creatingFamily, setCreatingFamily] = useState(false)
+  const [approvedItems, setApprovedItems] = useState([])
+  const [adminSection, setAdminSection] = useState('approve')
   const [swipeHintSeen, setSwipeHintSeen] = useState(() => !!getStoredValue('swipe_hint_seen'))
+  const [manualToken, setManualToken] = useState('')
+  const [scanMessage, setScanMessage] = useState('')
+  const [scannerBusy, setScannerBusy] = useState(false)
+
+  const videoRef = useRef(null)
+  const cameraStreamRef = useRef(null)
+  const scannerLoopRef = useRef(null)
+  const galleryRequestInFlightRef = useRef(false)
 
   useEffect(() => {
     // Warm up Render on first page load to reduce cold-start delay for user actions.
     fetch(`${API_BASE_URL}/api/health`).catch(() => {})
   }, [])
 
-  const activeGuestToken = token || getStoredValue('family_qr_token') || DEV_FALLBACK_QR_TOKEN
-  const guestHref = `/f/${encodeURIComponent(activeGuestToken)}`
   const topRibbon = (
     <nav className="top-ribbon">
       <div className="top-ribbon-inner">
-        <a className={`top-ribbon-link ${!adminMode && !galleryMode ? 'active' : ''}`} href={guestHref}>Guest</a>
-        {adminMode ? <a className="top-ribbon-link active" href="/admin/moderation">Admin</a> : null}
+        <a className={`top-ribbon-link ${introMode ? 'active' : ''}`} href="/">Home</a>
+        <a className={`top-ribbon-link ${scanMode ? 'active' : ''}`} href="/scan">Scan</a>
         <a className={`top-ribbon-link ${galleryMode ? 'active' : ''}`} href="/gallery">Gallery</a>
+        {adminMode ? <a className="top-ribbon-link active" href="/admin/moderation">Admin</a> : null}
       </div>
     </nav>
   )
 
-  const bootstrapSessionFromSavedToken = useCallback(async () => {
-    const savedQrToken = getStoredValue('family_qr_token')
-    const qrTokenToUse = savedQrToken || (import.meta.env.DEV ? DEV_FALLBACK_QR_TOKEN : '')
-    if (!qrTokenToUse) {
-      return null
+  const navigate = (to) => {
+    if (window.location.pathname === to) {
+      return
+    }
+    window.location.assign(to)
+  }
+
+  const bootstrapFromQrToken = useCallback(async (qrToken, redirectToGallery = false) => {
+    const trimmedToken = String(qrToken || '').trim()
+    if (!trimmedToken) {
+      throw new Error('Please provide a family token')
     }
 
-    if (!savedQrToken && qrTokenToUse) {
-      setStoredValue('family_qr_token', qrTokenToUse)
-    }
-
-    const response = await fetch(`${API_BASE_URL}/api/session/start`, {
+    const validateResponse = await fetch(`${API_BASE_URL}/api/token/validate`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ qr_token: qrTokenToUse, guest_name: '' }),
+      body: JSON.stringify({ qr_token: trimmedToken }),
     })
-    const data = await response.json()
-    if (!response.ok || !data?.session_token) {
-      return null
+
+    const validateData = await validateResponse.json()
+    if (!validateResponse.ok) {
+      throw new Error(validateData?.message || 'Invalid family token')
     }
 
-    setSessionToken(data.session_token)
-    setStoredValue('guest_session_token', data.session_token)
-    return data.session_token
+    const startResponse = await fetch(`${API_BASE_URL}/api/session/start`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ qr_token: trimmedToken, guest_name: '' }),
+    })
+    const startData = await startResponse.json()
+    if (!startResponse.ok || !startData?.session_token) {
+      throw new Error(startData?.message || 'Could not start session')
+    }
+
+    setSessionToken(startData.session_token)
+    setStoredValue('family_qr_token', trimmedToken)
+    setStoredValue('guest_session_token', startData.session_token)
+
+    if (redirectToGallery) {
+      navigate('/gallery')
+    }
+
+    return startData.session_token
   }, [])
+
+  const bootstrapSessionFromSavedToken = useCallback(async () => {
+    const savedQrToken = getStoredValue('family_qr_token') || (import.meta.env.DEV ? DEV_FALLBACK_QR_TOKEN : '')
+    if (!savedQrToken) {
+      return null
+    }
+    try {
+      return await bootstrapFromQrToken(savedQrToken, false)
+    } catch {
+      return null
+    }
+  }, [bootstrapFromQrToken])
 
   const loadPending = useCallback(async (tokenValue) => {
     const useToken = tokenValue || adminToken
@@ -118,6 +159,21 @@ function App() {
       throw new Error(data?.message || 'Failed to load pending photos')
     }
     setPendingItems(data.items || [])
+  }, [adminToken])
+
+  const loadApproved = useCallback(async (tokenValue) => {
+    const useToken = tokenValue || adminToken
+    if (!useToken) {
+      return
+    }
+    const response = await fetch(`${API_BASE_URL}/api/admin/photos/approved`, {
+      headers: { Authorization: `Bearer ${useToken}` },
+    })
+    const data = await response.json()
+    if (!response.ok) {
+      throw new Error(data?.message || 'Failed to load approved photos')
+    }
+    setApprovedItems(data.items || [])
   }, [adminToken])
 
   const loadUploadToggle = useCallback(async (tokenValue) => {
@@ -148,7 +204,11 @@ function App() {
     }
     setAdminToken(data.admin_token)
     setStoredValue('admin_token', data.admin_token)
-    await Promise.all([loadPending(data.admin_token), loadUploadToggle(data.admin_token)])
+    await Promise.all([
+      loadPending(data.admin_token),
+      loadUploadToggle(data.admin_token),
+      loadApproved(data.admin_token),
+    ])
     setAdminMessage('Admin login successful')
   }
 
@@ -246,6 +306,24 @@ function App() {
     }
   }
 
+  const deletePhoto = async (photoId) => {
+    if (!adminToken) {
+      return
+    }
+    const response = await fetch(`${API_BASE_URL}/api/admin/photos/${photoId}/delete`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ admin_token: adminToken }),
+    })
+    const data = await response.json()
+    if (!response.ok) {
+      setAdminMessage(data?.message || 'Could not delete photo')
+      return
+    }
+    setApprovedItems((items) => items.filter((item) => item.id !== photoId))
+    setAdminMessage('Photo removed from gallery')
+  }
+
   useEffect(() => {
     const saved = getStoredValue('guest_session_token')
     if (saved) {
@@ -257,7 +335,7 @@ function App() {
     if (adminMode) {
       setLoading(false)
       if (adminToken) {
-        Promise.all([loadPending(adminToken), loadUploadToggle(adminToken)]).catch((e) => {
+        Promise.all([loadPending(adminToken), loadUploadToggle(adminToken), loadApproved(adminToken)]).catch((e) => {
           setAdminMessage(e?.message || 'Unable to load moderation data')
         })
       }
@@ -269,45 +347,45 @@ function App() {
       return
     }
 
-    const validateToken = async () => {
+    if (scanMode || introMode) {
+      setLoading(false)
+      return
+    }
+
+    const bootstrapFromPathToken = async () => {
       if (!token) {
-        setError('This page requires a valid family QR link. Use /f/{token}.')
         setLoading(false)
         return
       }
 
       try {
-        const response = await fetch(`${API_BASE_URL}/api/token/validate`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ qr_token: token }),
-        })
-
-        const data = await response.json()
-        if (!response.ok) {
-          setError(data?.message || 'Unable to validate QR token.')
-        } else {
-          setFamily(data.family)
-          setStoredValue('family_qr_token', token)
-        }
+        await bootstrapFromQrToken(token, true)
       } catch {
-        setError('Cannot reach API server. Start the backend and try again.')
+        setError('Could not read this family QR token. Please scan again.')
+        navigate('/scan')
       } finally {
         setLoading(false)
       }
     }
 
-    validateToken()
-  }, [token, adminMode, galleryMode, adminToken, loadPending, loadUploadToggle])
+    bootstrapFromPathToken()
+  }, [token, adminMode, galleryMode, scanMode, introMode, adminToken, loadPending, loadUploadToggle, loadApproved, bootstrapFromQrToken])
 
   const loadGallery = useCallback(async () => {
+    if (galleryRequestInFlightRef.current) {
+      return
+    }
+
+    galleryRequestInFlightRef.current = true
+
     let activeSessionToken = sessionToken
     if (!activeSessionToken) {
       activeSessionToken = await bootstrapSessionFromSavedToken()
     }
 
     if (!activeSessionToken) {
-      setGalleryMessage('Start a guest session first via your family QR link.')
+      setGalleryMessage('Scan your family QR to start viewing and uploading photos.')
+      galleryRequestInFlightRef.current = false
       return
     }
 
@@ -317,10 +395,12 @@ function App() {
     const data = await response.json()
     if (!response.ok) {
       setGalleryMessage(data?.message || 'Unable to load gallery')
+      galleryRequestInFlightRef.current = false
       return
     }
     setGalleryItems(data.items || [])
     setGalleryMessage('')
+    galleryRequestInFlightRef.current = false
   }, [sessionToken, bootstrapSessionFromSavedToken])
 
   useEffect(() => {
@@ -329,7 +409,11 @@ function App() {
     }
 
     loadGallery()
-    const poll = window.setInterval(loadGallery, 15000)
+    const poll = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        loadGallery()
+      }
+    }, 15000)
     return () => window.clearInterval(poll)
   }, [galleryMode, sessionToken, loadGallery])
 
@@ -342,39 +426,17 @@ function App() {
     return () => window.clearTimeout(t)
   }, [swipeHintSeen])
 
-  const startSession = async () => {
-    setStartingSession(true)
-    setError('')
-    try {
-      const response = await fetch(`${API_BASE_URL}/api/session/start`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ qr_token: token, guest_name: guestName.trim() }),
-      })
-      const data = await response.json()
-      if (!response.ok) {
-        setError(data?.message || 'Could not start guest session.')
-        return
-      }
-
-      setSessionToken(data.session_token)
-      setStoredValue('guest_session_token', data.session_token)
-      setStoredValue('family_qr_token', token)
-    } catch {
-      setError('Cannot start session right now. Please retry.')
-    } finally {
-      setStartingSession(false)
-    }
-  }
-
   const blobToBase64 = async (blob) => {
-    const buffer = await blob.arrayBuffer()
-    let binary = ''
-    const bytes = new Uint8Array(buffer)
-    for (let i = 0; i < bytes.length; i += 1) {
-      binary += String.fromCharCode(bytes[i])
-    }
-    return btoa(binary)
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onloadend = () => {
+        const result = String(reader.result || '')
+        const commaIndex = result.indexOf(',')
+        resolve(commaIndex >= 0 ? result.slice(commaIndex + 1) : '')
+      }
+      reader.onerror = () => reject(new Error('Failed to read image'))
+      reader.readAsDataURL(blob)
+    })
   }
 
   const compressImage = async (file) => {
@@ -387,14 +449,14 @@ function App() {
       image.src = imageUrl
     })
 
-    const maxWidth = 1600
-    const ratio = Math.min(1, maxWidth / image.width)
-    const width = Math.round(image.width * ratio)
-    const height = Math.round(image.height * ratio)
+    const cropSide = Math.min(image.width, image.height)
+    const sx = Math.floor((image.width - cropSide) / 2)
+    const sy = Math.floor((image.height - cropSide) / 2)
+    const outputSize = Math.min(1200, cropSide)
 
     const canvas = document.createElement('canvas')
-    canvas.width = width
-    canvas.height = height
+    canvas.width = outputSize
+    canvas.height = outputSize
     const context = canvas.getContext('2d')
 
     if (!context) {
@@ -403,25 +465,25 @@ function App() {
 
     // Disposable camera style treatment.
     context.filter = 'contrast(1.15) saturate(1.08) sepia(0.18)'
-    context.drawImage(image, 0, 0, width, height)
+    context.drawImage(image, sx, sy, cropSide, cropSide, 0, 0, outputSize, outputSize)
 
     const gradient = context.createRadialGradient(
-      width / 2,
-      height / 2,
-      Math.min(width, height) * 0.25,
-      width / 2,
-      height / 2,
-      Math.max(width, height) * 0.7
+      outputSize / 2,
+      outputSize / 2,
+      outputSize * 0.25,
+      outputSize / 2,
+      outputSize / 2,
+      outputSize * 0.7
     )
     gradient.addColorStop(0, 'rgba(255,200,120,0.04)')
     gradient.addColorStop(1, 'rgba(20,12,6,0.22)')
     context.fillStyle = gradient
-    context.fillRect(0, 0, width, height)
+    context.fillRect(0, 0, outputSize, outputSize)
 
     URL.revokeObjectURL(imageUrl)
 
     const compressedBlob = await new Promise((resolve) => {
-      canvas.toBlob((blob) => resolve(blob), 'image/jpeg', 0.75)
+      canvas.toBlob((blob) => resolve(blob), 'image/jpeg', 0.72)
     })
 
     return compressedBlob
@@ -487,14 +549,20 @@ function App() {
       return
     }
 
+    const imageFiles = files.filter((f) => String(f.type || '').startsWith('image/'))
+    if (!imageFiles.length) {
+      setGalleryMessage('Only image files are supported.')
+      return
+    }
+
     setUploading(true)
-    setUploadJobs(files.map((f) => ({ name: f.name, status: 'pending', error: '' })))
+    setUploadJobs(imageFiles.map((f) => ({ name: f.name, status: 'pending', error: '' })))
 
     let doneCount = 0
-    for (let i = 0; i < files.length; i++) {
+    for (let i = 0; i < imageFiles.length; i++) {
       setUploadJobs((jobs) => jobs.map((j, idx) => idx === i ? { ...j, status: 'uploading' } : j))
       try {
-        await uploadOne(files[i])
+        await uploadOne(imageFiles[i])
         doneCount++
         setUploadJobs((jobs) => jobs.map((j, idx) => idx === i ? { ...j, status: 'done' } : j))
       } catch (uploadError) {
@@ -503,7 +571,7 @@ function App() {
     }
 
     setUploading(false)
-    setUploadMessage(doneCount ? `${doneCount} photo(s) uploaded. Pending moderation.` : 'Upload failed.')
+    setGalleryMessage(doneCount ? `${doneCount} photo(s) uploaded. Pending moderation.` : 'Upload failed. Please retry.')
     event.target.value = ''
   }
 
@@ -550,6 +618,7 @@ function App() {
   const onCardPointerMove = (e) => {
     if (dragOriginRef.current === null) return
     const dx = e.clientX - dragOriginRef.current
+    if (Math.abs(dx - (dragX || 0)) < 3) return
     if (Math.abs(dx) > 6) wasDragRef.current = true
     setDragX(dx)
   }
@@ -607,6 +676,105 @@ function App() {
   }
 
   const closeDrawer = () => setDrawerPhotoId(null)
+
+  const submitQrToken = useCallback(async (providedToken) => {
+    if (scannerBusy) {
+      return
+    }
+    const value = String(providedToken || '').trim()
+    if (!value) {
+      setScanMessage('Enter a valid family token')
+      return
+    }
+
+    setScannerBusy(true)
+    setScanMessage('Verifying token...')
+    try {
+      await bootstrapFromQrToken(value, true)
+    } catch (scanError) {
+      setScanMessage(scanError?.message || 'Token invalid. Please retry.')
+      setScannerBusy(false)
+    }
+  }, [scannerBusy, bootstrapFromQrToken])
+
+  useEffect(() => {
+    if (!scanMode) {
+      if (scannerLoopRef.current) {
+        window.clearInterval(scannerLoopRef.current)
+        scannerLoopRef.current = null
+      }
+      if (cameraStreamRef.current) {
+        cameraStreamRef.current.getTracks().forEach((track) => track.stop())
+        cameraStreamRef.current = null
+      }
+      return
+    }
+
+    let mounted = true
+
+    const setupScanner = async () => {
+      setScanMessage('Allow camera access to scan your family QR')
+
+      if (!('BarcodeDetector' in window)) {
+        setScanMessage('Camera scanning is not supported on this browser. Enter token manually below.')
+        return
+      }
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' } },
+          audio: false,
+        })
+
+        if (!mounted) {
+          stream.getTracks().forEach((track) => track.stop())
+          return
+        }
+
+        cameraStreamRef.current = stream
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream
+          await videoRef.current.play().catch(() => {})
+        }
+
+        const detector = new window.BarcodeDetector({ formats: ['qr_code'] })
+        scannerLoopRef.current = window.setInterval(async () => {
+          if (!videoRef.current || scannerBusy) {
+            return
+          }
+          try {
+            const codes = await detector.detect(videoRef.current)
+            if (codes && codes.length > 0) {
+              const raw = String(codes[0].rawValue || '').trim()
+              if (raw) {
+                const tokenMatch = raw.match(/\/f\/([^/?#]+)/)
+                const pickedToken = tokenMatch ? decodeURIComponent(tokenMatch[1]) : raw
+                submitQrToken(pickedToken)
+              }
+            }
+          } catch {
+            // Ignore intermittent scanner frame failures.
+          }
+        }, 700)
+      } catch {
+        setScanMessage('Camera permission denied. Enter token manually below.')
+      }
+    }
+
+    setupScanner()
+
+    return () => {
+      mounted = false
+      if (scannerLoopRef.current) {
+        window.clearInterval(scannerLoopRef.current)
+        scannerLoopRef.current = null
+      }
+      if (cameraStreamRef.current) {
+        cameraStreamRef.current.getTracks().forEach((track) => track.stop())
+        cameraStreamRef.current = null
+      }
+    }
+  }, [scanMode, scannerBusy, submitQrToken])
 
   const submitComment = async (photoId) => {
     const text = commentText.trim()
@@ -678,73 +846,175 @@ function App() {
               <button className="primary" onClick={adminLogin}>Login</button>
             </div>
           ) : (
-            <>
-              <div className="admin-toolbar">
-                <button className="primary small" onClick={() => loadPending()}>Refresh</button>
-                <button className="primary small" disabled={!selectedIds.length} onClick={bulkApprove}>
-                  Bulk Approve ({selectedIds.length})
-                </button>
-                <button className="primary small" onClick={() => setUploadsEnabled(!uploadEnabled)}>
-                  Uploads: {uploadEnabled ? 'ON' : 'OFF'}
-                </button>
-                {import.meta.env.DEV ? <button className="primary small" onClick={seedDemoApprovedPhoto}>Seed Demo Photo</button> : null}
-              </div>
+            <div className="admin-layout">
+              <aside className="admin-sidebar">
+                <button className={`admin-menu-item ${adminSection === 'create' ? 'active' : ''}`} onClick={() => setAdminSection('create')}>Create Family</button>
+                <button className={`admin-menu-item ${adminSection === 'approve' ? 'active' : ''}`} onClick={() => setAdminSection('approve')}>Approve Photos</button>
+                <button className={`admin-menu-item ${adminSection === 'delete' ? 'active' : ''}`} onClick={() => setAdminSection('delete')}>Delete from Gallery</button>
+                <button className={`admin-menu-item ${adminSection === 'toggle' ? 'active' : ''}`} onClick={() => setAdminSection('toggle')}>Upload Toggle</button>
+                <button className={`admin-menu-item ${adminSection === 'tools' ? 'active' : ''}`} onClick={() => setAdminSection('tools')}>Utilities</button>
+              </aside>
 
-              <div className="family-create">
-                <h2 className="section-heading">Add New Family</h2>
-                <div className="family-create-grid">
-                  <input className="name-input" placeholder="Family name *" value={newFamilyName} onChange={(e) => setNewFamilyName(e.target.value)} />
-                  <input className="name-input" placeholder="Slug (optional, auto-generated)" value={newFamilySlug} onChange={(e) => setNewFamilySlug(e.target.value)} />
-                  <input className="name-input" placeholder="QR token (optional, auto-generated)" value={newFamilyToken} onChange={(e) => setNewFamilyToken(e.target.value)} />
-                  <button className="primary small" disabled={!newFamilyName.trim() || creatingFamily} onClick={createFamily}>
-                    {creatingFamily ? 'Creating…' : 'Create Family'}
-                  </button>
-                </div>
-              </div>
-
-              <div className="moderation-grid">
-                {pendingItems.length === 0 ? <p className="hint">No pending photos.</p> : null}
-                {pendingItems.map((item) => (
-                  <article key={item.id} className="moderation-item">
-                    <label className="checkbox-row">
-                      <input
-                        type="checkbox"
-                        checked={selectedIds.includes(item.id)}
-                        onChange={(event) => {
-                          if (event.target.checked) {
-                            setSelectedIds((ids) => [...ids, item.id])
-                          } else {
-                            setSelectedIds((ids) => ids.filter((id) => id !== item.id))
-                          }
-                        }}
-                      />
-                      Photo #{item.id}
-                    </label>
-                    <p className="hint">
-                      {item.family_name} {item.guest_name ? `• ${item.guest_name}` : ''}
-                    </p>
-                    {(item.filtered_url || item.original_url) ? (
-                      <img
-                        src={item.filtered_url || item.original_url}
-                        alt="pending photo thumbnail"
-                        className="mod-thumb"
-                        onError={(e) => { e.currentTarget.style.display = 'none' }}
-                        draggable={false}
-                      />
-                    ) : (
-                      <div className="mod-thumb mod-thumb-empty" />
-                    )}
-                    <div className="admin-actions">
-                      <button className="primary small" onClick={() => moderateOne(item.id, 'approve')}>Approve</button>
-                      <button className="danger small" onClick={() => moderateOne(item.id, 'reject')}>Reject</button>
+              <div className="admin-content">
+                {adminSection === 'create' ? (
+                  <div className="family-create">
+                    <h2 className="section-heading">Create a Family</h2>
+                    <div className="family-create-grid">
+                      <input className="name-input" placeholder="Family name *" value={newFamilyName} onChange={(e) => setNewFamilyName(e.target.value)} />
+                      <input className="name-input" placeholder="Slug (optional, auto-generated)" value={newFamilySlug} onChange={(e) => setNewFamilySlug(e.target.value)} />
+                      <input className="name-input" placeholder="QR token (optional, auto-generated)" value={newFamilyToken} onChange={(e) => setNewFamilyToken(e.target.value)} />
+                      <button className="primary small" disabled={!newFamilyName.trim() || creatingFamily} onClick={createFamily}>
+                        {creatingFamily ? 'Creating…' : 'Create Family'}
+                      </button>
                     </div>
-                  </article>
-                ))}
+                  </div>
+                ) : null}
+
+                {adminSection === 'approve' ? (
+                  <>
+                    <div className="admin-toolbar">
+                      <button className="primary small" onClick={() => loadPending()}>Refresh Pending</button>
+                      <button className="primary small" disabled={!selectedIds.length} onClick={bulkApprove}>
+                        Bulk Approve ({selectedIds.length})
+                      </button>
+                    </div>
+                    <div className="moderation-grid">
+                      {pendingItems.length === 0 ? <p className="hint">No pending photos.</p> : null}
+                      {pendingItems.map((item) => (
+                        <article key={item.id} className="moderation-item">
+                          <label className="checkbox-row">
+                            <input
+                              type="checkbox"
+                              checked={selectedIds.includes(item.id)}
+                              onChange={(event) => {
+                                if (event.target.checked) {
+                                  setSelectedIds((ids) => [...ids, item.id])
+                                } else {
+                                  setSelectedIds((ids) => ids.filter((id) => id !== item.id))
+                                }
+                              }}
+                            />
+                            Photo #{item.id}
+                          </label>
+                          <p className="hint">
+                            {item.family_name} {item.guest_name ? `• ${item.guest_name}` : ''}
+                          </p>
+                          {(item.filtered_url || item.original_url) ? (
+                            <img
+                              src={item.filtered_url || item.original_url}
+                              alt="pending photo thumbnail"
+                              className="mod-thumb"
+                              loading="lazy"
+                              onError={(e) => { e.currentTarget.style.display = 'none' }}
+                              draggable={false}
+                            />
+                          ) : (
+                            <div className="mod-thumb mod-thumb-empty" />
+                          )}
+                          <div className="admin-actions">
+                            <button className="primary small" onClick={() => moderateOne(item.id, 'approve')}>Approve</button>
+                            <button className="danger small" onClick={() => moderateOne(item.id, 'reject')}>Reject</button>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  </>
+                ) : null}
+
+                {adminSection === 'delete' ? (
+                  <>
+                    <div className="admin-toolbar">
+                      <button className="primary small" onClick={() => loadApproved()}>Refresh Approved</button>
+                    </div>
+                    <div className="moderation-grid">
+                      {approvedItems.length === 0 ? <p className="hint">No approved photos.</p> : null}
+                      {approvedItems.map((item) => (
+                        <article key={item.id} className="moderation-item">
+                          <p className="hint">
+                            #{item.id} {item.family_name} {item.guest_name ? `• ${item.guest_name}` : ''}
+                          </p>
+                          {(item.filtered_url || item.original_url) ? (
+                            <img
+                              src={item.filtered_url || item.original_url}
+                              alt="approved photo"
+                              className="mod-thumb"
+                              loading="lazy"
+                              onError={(e) => { e.currentTarget.style.display = 'none' }}
+                              draggable={false}
+                            />
+                          ) : (
+                            <div className="mod-thumb mod-thumb-empty" />
+                          )}
+                          <div className="admin-actions">
+                            <button className="danger small" onClick={() => deletePhoto(item.id)}>Delete from Gallery</button>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  </>
+                ) : null}
+
+                {adminSection === 'toggle' ? (
+                  <div className="family-create">
+                    <h2 className="section-heading">Upload Toggle</h2>
+                    <p className="hint">Use this if you need to temporarily pause new uploads.</p>
+                    <button className="primary small" onClick={() => setUploadsEnabled(!uploadEnabled)}>
+                      Uploads: {uploadEnabled ? 'ON' : 'OFF'}
+                    </button>
+                  </div>
+                ) : null}
+
+                {adminSection === 'tools' ? (
+                  <div className="family-create">
+                    <h2 className="section-heading">Utilities</h2>
+                    <div className="admin-toolbar">
+                      <button className="primary small" onClick={() => {
+                        loadPending()
+                        loadApproved()
+                        loadUploadToggle()
+                      }}>
+                        Refresh All Data
+                      </button>
+                      {import.meta.env.DEV ? <button className="primary small" onClick={seedDemoApprovedPhoto}>Seed Demo Photo</button> : null}
+                    </div>
+                  </div>
+                ) : null}
               </div>
-            </>
+            </div>
           )}
 
           {adminMessage ? <p className="upload-note">{adminMessage}</p> : null}
+        </section>
+      </main>
+    )
+  }
+
+  if (scanMode) {
+    return (
+      <main className="shell">
+        {topRibbon}
+        <section className="card scan-card">
+          <p className="eyebrow">Shivani &amp; Nishant · 12 Dec 2026</p>
+          <h1>Scan Family QR</h1>
+          <p className="hint">Scan your family QR from camera, or enter token manually below.</p>
+
+          <div className="scan-preview-wrap">
+            <video className="scan-preview" ref={videoRef} muted playsInline />
+          </div>
+
+          {scanMessage ? <p className="upload-note">{scanMessage}</p> : null}
+
+          <div className="scan-manual-row">
+            <input
+              value={manualToken}
+              onChange={(event) => setManualToken(event.target.value)}
+              placeholder="Enter family token"
+              className="name-input"
+            />
+            <button className="primary" disabled={scannerBusy} onClick={() => submitQrToken(manualToken)}>
+              {scannerBusy ? 'Joining…' : 'Join Gallery'}
+            </button>
+          </div>
         </section>
       </main>
     )
@@ -767,9 +1037,25 @@ function App() {
           <p className="eyebrow">Shivani &amp; Nishant · 12 Dec 2026</p>
           <h1>The Wedding Album 📸</h1>
           {!sessionToken ? (
-            <p className="error">Start a guest session first via your family QR link.</p>
+            <p className="error">Scan your family QR to continue.</p>
           ) : null}
           {galleryMessage ? <p className="upload-note">{galleryMessage}</p> : null}
+
+          {uploadJobs.length > 0 ? (
+            <ul className="upload-progress-list">
+              {uploadJobs.map((job, idx) => (
+                <li key={idx} className={`upload-job upload-job--${job.status}`}>
+                  <span className="upload-job-name">{job.name}</span>
+                  <span className="upload-job-status">
+                    {job.status === 'pending' && 'Waiting'}
+                    {job.status === 'uploading' && 'Uploading…'}
+                    {job.status === 'done' && 'Done'}
+                    {job.status === 'error' && `Failed: ${job.error}`}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
 
           {visibleGalleryItems.length > 0 ? (
             <p className="photo-counter">{(galleryIndex % visibleGalleryItems.length) + 1} / {visibleGalleryItems.length}</p>
@@ -852,6 +1138,18 @@ function App() {
             <p className="hint">No photos yet — check back soon after some memories are shared! 🎊</p>
           )}
         </section>
+
+        <label className={`upload-fab gallery-upload-fab ${!sessionToken || uploading ? 'disabled' : ''}`}>
+          <input
+            type="file"
+            accept="image/*"
+            multiple
+            disabled={!sessionToken || uploading}
+            onChange={onFilesSelected}
+          />
+          {uploading ? 'Uploading...' : 'Upload Photos +'}
+          <span className="fab-consent">Images are auto-cropped to square and vintage style</span>
+        </label>
       </main>
     )
   }
@@ -859,61 +1157,20 @@ function App() {
   return (
     <main className="shell">
       {topRibbon}
-      <section className="card">
+      <section className="card intro-card">
         <p className="eyebrow">Shivani &amp; Nishant · 12 Dec 2026</p>
-        <h1>{sessionToken && family ? `Welcome, ${family.name}! 🎉` : 'Capture the Moment 📸'}</h1>
+        <h1>Welcome to the Wedding Memory Wall</h1>
+        <p className="hint intro-copy">
+          Capture moments from Shivani &amp; Nishant’s day. Scan your family QR to join the live gallery and upload your photos instantly.
+        </p>
 
-        {error ? (
-          <p className="error">{error}</p>
-        ) : family && !sessionToken ? (
-          <>
-            <p className="hint">Enter your name (optional) to get started.</p>
-            <input
-              value={guestName}
-              onChange={(event) => setGuestName(event.target.value)}
-              maxLength={60}
-              placeholder="Your name (optional)"
-              className="name-input"
-            />
-            <button className="primary" onClick={startSession} disabled={startingSession}>
-              {startingSession ? 'Starting...' : 'Start Session'}
-            </button>
-          </>
-        ) : null}
+        {error ? <p className="error">{error}</p> : null}
 
-        {sessionToken ? (
-          <>
-            {uploadJobs.length > 0 ? (
-              <ul className="upload-progress-list">
-                {uploadJobs.map((job, idx) => (
-                  <li key={idx} className={`upload-job upload-job--${job.status}`}>
-                    <span className="upload-job-name">{job.name}</span>
-                    <span className="upload-job-status">
-                      {job.status === 'pending' && 'Waiting'}
-                      {job.status === 'uploading' && 'Uploading…'}
-                      {job.status === 'done' && 'Done'}
-                      {job.status === 'error' && `Failed: ${job.error}`}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            ) : uploadMessage ? <p className="upload-note">{uploadMessage}</p> : null}
-            <a className="primary gallery-nav-btn" href="/gallery">View the Wedding Album →</a>
-          </>
-        ) : null}
+        <div className="intro-actions">
+          <a className="primary gallery-nav-btn" href="/scan">Scan QR to Join</a>
+          <button className="secondary" onClick={() => navigate('/scan')}>Enter code manually</button>
+        </div>
       </section>
-
-      <label className={`upload-fab ${!sessionToken || uploading ? 'disabled' : ''}`}>
-        <input
-          type="file"
-          accept="image/*"
-          multiple
-          disabled={!sessionToken || uploading}
-          onChange={onFilesSelected}
-        />
-        {uploading ? 'Uploading...' : 'Upload Photos'}
-        <span className="fab-consent">By uploading you allow the couple to keep &amp; display your photos</span>
-      </label>
     </main>
   )
 }

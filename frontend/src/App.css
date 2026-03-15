@@ -121,6 +121,57 @@ h1 {
   cursor: not-allowed;
 }
 
+.secondary {
+  width: 100%;
+  border: 1px solid #d9b993;
+  border-radius: 12px;
+  padding: 11px;
+  background: #fff;
+  color: #6d4f35;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.intro-card {
+  width: min(640px, 100%);
+}
+
+.intro-copy {
+  font-size: 1.03rem;
+  line-height: 1.6;
+}
+
+.intro-actions {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.scan-card {
+  width: min(680px, 100%);
+}
+
+.scan-preview-wrap {
+  border: 1px solid #efd9bd;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #2d1808;
+  aspect-ratio: 4 / 3;
+  margin: 10px 0;
+}
+
+.scan-preview {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.scan-manual-row {
+  margin-top: 12px;
+}
+
 .status-grid {
   margin-top: 16px;
   display: grid;
@@ -202,6 +253,45 @@ h1 {
 .admin-login {
   display: grid;
   gap: 10px;
+}
+
+.admin-layout {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 14px;
+  align-items: start;
+}
+
+.admin-sidebar {
+  background: #fff;
+  border: 1px solid #efd9bd;
+  border-radius: 12px;
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+  position: sticky;
+  top: 74px;
+}
+
+.admin-menu-item {
+  border: 1px solid #e8c9ab;
+  background: #fff8f2;
+  color: #6d4f35;
+  border-radius: 10px;
+  padding: 10px;
+  text-align: left;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.admin-menu-item.active {
+  background: #ffedd8;
+  border-color: #e7aa6f;
+  color: #51361f;
+}
+
+.admin-content {
+  min-width: 0;
 }
 
 .admin-toolbar {
@@ -304,6 +394,10 @@ h1 {
 
 .gallery-card {
   width: min(620px, 100%);
+}
+
+.gallery-upload-fab {
+  z-index: 50;
 }
 
 .swipe-card {
@@ -642,6 +736,20 @@ h1 {
   .admin-actions,
   .swipe-actions {
     gap: 10px;
+  }
+
+  .admin-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-sidebar {
+    position: static;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .admin-menu-item {
+    text-align: center;
+    font-size: 13px;
   }
 
   .swipe-hint-overlay p {
