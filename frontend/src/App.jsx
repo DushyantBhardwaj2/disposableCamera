@@ -939,7 +939,7 @@ function App() {
   useEffect(() => {
     if (!scanMode) {
       if (scannerLoopRef.current) {
-        window.clearInterval(scannerLoopRef.current)
+        window.clearTimeout(scannerLoopRef.current)
         scannerLoopRef.current = null
       }
       if (cameraStreamRef.current) {
