@@ -77,6 +77,8 @@ function App() {
   const cameraStreamRef = useRef(null)
   const scannerLoopRef = useRef(null)
   const galleryRequestInFlightRef = useRef(false)
+  const dragRafRef = useRef(null)
+  const pendingDragXRef = useRef(0)
 
   useEffect(() => {
     // Warm up Render on first page load to reduce cold-start delay for user actions.
@@ -427,29 +429,38 @@ function App() {
 
     galleryRequestInFlightRef.current = true
 
-    let activeSessionToken = sessionToken
-    if (!activeSessionToken) {
-      activeSessionToken = await bootstrapSessionFromSavedToken()
-    }
+    try {
+      let activeSessionToken = sessionToken
+      if (!activeSessionToken) {
+        activeSessionToken = await bootstrapSessionFromSavedToken()
+      }
 
-    if (!activeSessionToken) {
-      setGalleryMessage('Scan your family QR to start viewing and uploading photos.')
-      galleryRequestInFlightRef.current = false
-      return
-    }
+      if (!activeSessionToken) {
+        setGalleryMessage('Scan your family QR to start viewing and uploading photos.')
+        return
+      }
 
-    const response = await fetch(`${API_BASE_URL}/api/gallery/approved`, {
-      headers: { 'x-session-token': activeSessionToken },
-    })
-    const data = await response.json()
-    if (!response.ok) {
-      setGalleryMessage(data?.message || 'Unable to load gallery')
+      const response = await fetch(`${API_BASE_URL}/api/gallery/approved`, {
+        headers: { 'x-session-token': activeSessionToken },
+      })
+      const data = await response.json()
+      if (!response.ok) {
+        setGalleryMessage(data?.message || 'Unable to load gallery')
+        return
+      }
+
+      const cappedItems = Array.isArray(data.items) ? data.items.slice(0, 200) : []
+      setGalleryItems(cappedItems)
+      setGalleryMessage('')
+      setGalleryIndex((index) => {
+        if (!cappedItems.length) return 0
+        return index % cappedItems.length
+      })
+    } catch {
+      setGalleryMessage('Unable to load gallery right now. Please retry in a moment.')
+    } finally {
       galleryRequestInFlightRef.current = false
-      return
     }
-    setGalleryItems(data.items || [])
-    setGalleryMessage('')
-    galleryRequestInFlightRef.current = false
   }, [sessionToken, bootstrapSessionFromSavedToken])
 
   useEffect(() => {
@@ -617,14 +628,22 @@ function App() {
       } catch (uploadError) {
         setUploadJobs((jobs) => jobs.map((j, idx) => idx === i ? { ...j, status: 'error', error: uploadError?.message || 'Failed' } : j))
       }
+      // Yield to UI thread between files on slower phones.
+      await new Promise((resolve) => window.setTimeout(resolve, 0))
     }
 
     setUploading(false)
     setGalleryMessage(doneCount ? `${doneCount} photo(s) uploaded. Pending moderation.` : 'Upload failed. Please retry.')
+    if (doneCount > 0) {
+      loadGallery()
+    }
     event.target.value = ''
   }
 
-  const visibleGalleryItems = galleryItems.filter((item) => !brokenPhotoIds.includes(item.id))
+  const visibleGalleryItems = useMemo(
+    () => galleryItems.filter((item) => !brokenPhotoIds.includes(item.id)),
+    [galleryItems, brokenPhotoIds]
+  )
   const currentCard = visibleGalleryItems.length
     ? visibleGalleryItems[galleryIndex % visibleGalleryItems.length]
     : null
@@ -669,7 +688,13 @@ function App() {
     const dx = e.clientX - dragOriginRef.current
     if (Math.abs(dx - (dragX || 0)) < 3) return
     if (Math.abs(dx) > 6) wasDragRef.current = true
-    setDragX(dx)
+
+    pendingDragXRef.current = dx
+    if (dragRafRef.current !== null) return
+    dragRafRef.current = window.requestAnimationFrame(() => {
+      setDragX(pendingDragXRef.current)
+      dragRafRef.current = null
+    })
   }
 
   const onCardPointerUp = () => {
@@ -690,6 +715,14 @@ function App() {
     setDragX(null)
   }
 
+  useEffect(() => {
+    return () => {
+      if (dragRafRef.current !== null) {
+        window.cancelAnimationFrame(dragRafRef.current)
+      }
+    }
+  }, [])
+
   const cardDragStyle = (() => {
     if (flyDir === 'like') return { transform: 'translateX(600px) rotate(22deg)', transition: 'transform 0.32s ease-in', pointerEvents: 'none' }
     if (flyDir === 'skip') return { transform: 'translateX(-600px) rotate(-22deg)', transition: 'transform 0.32s ease-in', pointerEvents: 'none' }
@@ -707,6 +740,7 @@ function App() {
   const loadComments = useCallback(async (photoId) => {
     const tok = sessionToken
     if (!tok) return
+    if (comments[photoId]) return
     try {
       const res = await fetch(`${API_BASE_URL}/api/photos/${photoId}/comments`, {
         headers: { 'x-session-token': tok },
@@ -716,7 +750,7 @@ function App() {
         setComments((prev) => ({ ...prev, [photoId]: data.comments || [] }))
       }
     } catch { /* silent */ }
-  }, [sessionToken])
+  }, [sessionToken, comments])
 
   const openDrawer = (photoId) => {
     setDrawerPhotoId(photoId)
@@ -724,7 +758,16 @@ function App() {
     loadComments(photoId)
   }
 
-  const closeDrawer = () => setDrawerPhotoId(null)
+  const closeDrawer = () => {
+    if (drawerPhotoId) {
+      setComments((prev) => {
+        const next = { ...prev }
+        delete next[drawerPhotoId]
+        return next
+      })
+    }
+    setDrawerPhotoId(null)
+  }
 
   const submitQrToken = useCallback(async (providedToken) => {
     if (scannerBusy) {
