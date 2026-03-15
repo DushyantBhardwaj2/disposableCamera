@@ -456,6 +456,57 @@ function App() {
     setHealthSnapshot(data)
   }, [adminToken, handleAdminAuthFailure])
 
+  const loadUploadToggle = useCallback(async (tokenValue) => {
+    const useToken = tokenValue || adminToken
+    if (!useToken) {
+      return
+    }
+    const response = await fetch(`${API_BASE_URL}/api/admin/upload-toggle`, {
+      headers: { Authorization: `Bearer ${useToken}` },
+    })
+    const data = await response.json()
+    if (!response.ok) {
+      if (response.status === 401 && handleAdminAuthFailure(data, 'Unable to load upload toggle')) {
+        return
+      }
+      return
+    }
+    setUploadEnabled(Boolean(data.upload_enabled))
+  }, [adminToken, handleAdminAuthFailure])
+
+  const loadTelemetrySummary = useCallback(async (tokenValue) => {
+    const useToken = tokenValue || adminToken
+    if (!useToken) {
+      return
+    }
+    const response = await fetch(`${API_BASE_URL}/api/admin/telemetry/summary`, {
+      headers: { Authorization: `Bearer ${useToken}` },
+    })
+    const data = await response.json()
+    if (!response.ok) {
+      if (response.status === 401 && handleAdminAuthFailure(data, 'Unable to load telemetry summary')) {
+        return
+      }
+      setAdminMessage(data?.message || 'Unable to load telemetry summary')
+      return
+    }
+    setTelemetryCounters(Array.isArray(data.counters) ? data.counters : [])
+    const groups = data?.groups && typeof data.groups === 'object' ? data.groups : {}
+    setTelemetryGroups({
+      route_hits: Array.isArray(groups.route_hits) ? groups.route_hits : [],
+      latency_buckets: Array.isArray(groups.latency_buckets) ? groups.latency_buckets : [],
+      client_events: Array.isArray(groups.client_events) ? groups.client_events : [],
+      other: Array.isArray(groups.other) ? groups.other : [],
+    })
+    const totals = data?.totals && typeof data.totals === 'object' ? data.totals : {}
+    setTelemetryTotals({
+      route_hits: Number(totals.route_hits || 0),
+      latency_events: Number(totals.latency_events || 0),
+      client_events: Number(totals.client_events || 0),
+      other_events: Number(totals.other_events || 0),
+    })
+  }, [adminToken, handleAdminAuthFailure])
+
   const runOpsChecks = useCallback(async (options = {}) => {
     if (!adminToken || runningOpsChecks) {
       return
@@ -708,57 +759,6 @@ function App() {
     setAdminToDate('')
     setSelectedIds([])
   }, [])
-
-  const loadUploadToggle = useCallback(async (tokenValue) => {
-    const useToken = tokenValue || adminToken
-    if (!useToken) {
-      return
-    }
-    const response = await fetch(`${API_BASE_URL}/api/admin/upload-toggle`, {
-      headers: { Authorization: `Bearer ${useToken}` },
-    })
-    const data = await response.json()
-    if (!response.ok) {
-      if (response.status === 401 && handleAdminAuthFailure(data, 'Unable to load upload toggle')) {
-        return
-      }
-      return
-    }
-    setUploadEnabled(Boolean(data.upload_enabled))
-  }, [adminToken, handleAdminAuthFailure])
-
-  const loadTelemetrySummary = useCallback(async (tokenValue) => {
-    const useToken = tokenValue || adminToken
-    if (!useToken) {
-      return
-    }
-    const response = await fetch(`${API_BASE_URL}/api/admin/telemetry/summary`, {
-      headers: { Authorization: `Bearer ${useToken}` },
-    })
-    const data = await response.json()
-    if (!response.ok) {
-      if (response.status === 401 && handleAdminAuthFailure(data, 'Unable to load telemetry summary')) {
-        return
-      }
-      setAdminMessage(data?.message || 'Unable to load telemetry summary')
-      return
-    }
-    setTelemetryCounters(Array.isArray(data.counters) ? data.counters : [])
-    const groups = data?.groups && typeof data.groups === 'object' ? data.groups : {}
-    setTelemetryGroups({
-      route_hits: Array.isArray(groups.route_hits) ? groups.route_hits : [],
-      latency_buckets: Array.isArray(groups.latency_buckets) ? groups.latency_buckets : [],
-      client_events: Array.isArray(groups.client_events) ? groups.client_events : [],
-      other: Array.isArray(groups.other) ? groups.other : [],
-    })
-    const totals = data?.totals && typeof data.totals === 'object' ? data.totals : {}
-    setTelemetryTotals({
-      route_hits: Number(totals.route_hits || 0),
-      latency_events: Number(totals.latency_events || 0),
-      client_events: Number(totals.client_events || 0),
-      other_events: Number(totals.other_events || 0),
-    })
-  }, [adminToken, handleAdminAuthFailure])
 
   const adminLogin = async () => {
     setAdminMessage('')
