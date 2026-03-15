@@ -31,6 +31,16 @@ const clearStoredValue = (key) => {
   window.localStorage.removeItem(key)
 }
 
+const fetchWithTimeout = async (url, options = {}, timeoutMs = 12000) => {
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(url, { ...options, signal: controller.signal })
+  } finally {
+    window.clearTimeout(timer)
+  }
+}
+
 function App() {
   const pathname = window.location.pathname
   const adminMode = useMemo(() => isAdminRoute(pathname), [pathname])
@@ -77,7 +87,10 @@ function App() {
   const videoRef = useRef(null)
   const cameraStreamRef = useRef(null)
   const scannerLoopRef = useRef(null)
+  const scannerInFlightRef = useRef(false)
   const galleryRequestInFlightRef = useRef(false)
+  const galleryPollTimerRef = useRef(null)
+  const galleryPollFailureCountRef = useRef(0)
   const firstGalleryLoadRef = useRef(true)
   const dragRafRef = useRef(null)
   const pendingDragXRef = useRef(0)
@@ -445,12 +458,13 @@ function App() {
         return
       }
 
-      const response = await fetch(`${API_BASE_URL}/api/gallery/approved`, {
+      const response = await fetchWithTimeout(`${API_BASE_URL}/api/gallery/approved`, {
         headers: { 'x-session-token': activeSessionToken },
-      })
+      }, 12000)
       const data = await response.json()
       if (!response.ok) {
         setGalleryMessage(data?.message || 'Unable to load gallery')
+        galleryPollFailureCountRef.current += 1
         return
       }
 
@@ -462,7 +476,9 @@ function App() {
         return index % cappedItems.length
       })
       firstGalleryLoadRef.current = false
+      galleryPollFailureCountRef.current = 0
     } catch {
+      galleryPollFailureCountRef.current += 1
       setGalleryMessage('Unable to load gallery right now. Please retry in a moment.')
     } finally {
       setGalleryLoading(false)
@@ -473,17 +489,40 @@ function App() {
   useEffect(() => {
     if (!galleryMode) {
       firstGalleryLoadRef.current = true
+      if (galleryPollTimerRef.current) {
+        window.clearTimeout(galleryPollTimerRef.current)
+        galleryPollTimerRef.current = null
+      }
       return
     }
 
-    loadGallery()
-    const poll = window.setInterval(() => {
-      if (document.visibilityState === 'visible' && !uploading) {
-        loadGallery()
+    let cancelled = false
+
+    const scheduleNext = () => {
+      if (cancelled) return
+      const failures = galleryPollFailureCountRef.current
+      const nextMs = Math.min(60000, 15000 + failures * 7000)
+      galleryPollTimerRef.current = window.setTimeout(tick, nextMs)
+    }
+
+    const tick = async () => {
+      if (cancelled) return
+      if (document.visibilityState === 'visible' && !uploading && !drawerPhotoId) {
+        await loadGallery()
       }
-    }, 15000)
-    return () => window.clearInterval(poll)
-  }, [galleryMode, sessionToken, loadGallery, uploading])
+      scheduleNext()
+    }
+
+    tick()
+
+    return () => {
+      cancelled = true
+      if (galleryPollTimerRef.current) {
+        window.clearTimeout(galleryPollTimerRef.current)
+        galleryPollTimerRef.current = null
+      }
+    }
+  }, [galleryMode, loadGallery, uploading, drawerPhotoId])
 
   useEffect(() => {
     if (swipeHintSeen) return
@@ -784,9 +823,9 @@ function App() {
     if (!tok) return
     if (comments[photoId]) return
     try {
-      const res = await fetch(`${API_BASE_URL}/api/photos/${photoId}/comments`, {
+      const res = await fetchWithTimeout(`${API_BASE_URL}/api/photos/${photoId}/comments`, {
         headers: { 'x-session-token': tok },
-      })
+      }, 10000)
       const data = await res.json()
       if (res.ok) {
         setComments((prev) => ({ ...prev, [photoId]: data.comments || [] }))
@@ -872,10 +911,18 @@ function App() {
         }
 
         const detector = new window.BarcodeDetector({ formats: ['qr_code'] })
-        scannerLoopRef.current = window.setInterval(async () => {
-          if (!videoRef.current || scannerBusy) {
+
+        const runScan = async () => {
+          if (!mounted || !scanMode) {
             return
           }
+
+          if (document.visibilityState !== 'visible' || !videoRef.current || scannerBusy || scannerInFlightRef.current) {
+            scannerLoopRef.current = window.setTimeout(runScan, 900)
+            return
+          }
+
+          scannerInFlightRef.current = true
           try {
             const codes = await detector.detect(videoRef.current)
             if (codes && codes.length > 0) {
@@ -888,8 +935,14 @@ function App() {
             }
           } catch {
             // Ignore intermittent scanner frame failures.
+          } finally {
+            scannerInFlightRef.current = false
           }
-        }, 700)
+
+          scannerLoopRef.current = window.setTimeout(runScan, 650)
+        }
+
+        runScan()
       } catch {
         setScanMessage('Camera permission denied. Enter token manually below.')
       }
@@ -900,9 +953,10 @@ function App() {
     return () => {
       mounted = false
       if (scannerLoopRef.current) {
-        window.clearInterval(scannerLoopRef.current)
+        window.clearTimeout(scannerLoopRef.current)
         scannerLoopRef.current = null
       }
+      scannerInFlightRef.current = false
       if (cameraStreamRef.current) {
         cameraStreamRef.current.getTracks().forEach((track) => track.stop())
         cameraStreamRef.current = null
