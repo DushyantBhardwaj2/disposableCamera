@@ -194,6 +194,15 @@ const applyMigrations = () => {
   }
 }
 
+const seedDefaultFamilies = () => {
+  const seedPath = path.join(rootDir, 'migrations', '0002_seed_families.sql')
+  if (!fs.existsSync(seedPath)) {
+    return
+  }
+  const sql = fs.readFileSync(seedPath, 'utf8')
+  db.exec(sql)
+}
+
 const json = (res: Response, data: JsonValue, status = 200) => {
   res.status(status).json(data)
 }
@@ -489,6 +498,7 @@ const ensurePhotoInFamily = (photoId: number, familyId: number) => {
 }
 
 applyMigrations()
+seedDefaultFamilies()
 
 app.get(['/', '/api'], (_req, res) => {
   json(res, {
@@ -506,6 +516,7 @@ app.get(['/', '/api'], (_req, res) => {
       'GET /api/photos/:id/comments',
       'POST /api/photos/:id/comments',
       'POST /api/admin/login',
+      'POST /api/admin/families/reseed-defaults',
       'GET /api/admin/photos/pending',
       'POST /api/admin/photos/:id/approve',
       'POST /api/admin/photos/:id/reject',
@@ -1089,6 +1100,28 @@ app.post('/api/admin/login', (req, res) => {
   }
 
   return json(res, { admin_token: createAdminToken(), expires_in_hours: 8 })
+})
+
+app.post('/api/admin/families/reseed-defaults', (req, res) => {
+  const auth = requireAdmin(req, req.body?.admin_token)
+  if (!auth.ok) {
+    return auth.response(res)
+  }
+
+  const countFamilies = () =>
+    Number((db.prepare('SELECT COUNT(1) AS total FROM families').get() as { total: number } | undefined)?.total || 0)
+
+  const before = countFamilies()
+  seedDefaultFamilies()
+  const after = countFamilies()
+
+  return json(res, {
+    ok: true,
+    seeded_from_migration: '0002_seed_families.sql',
+    families_before: before,
+    families_after: after,
+    inserted: Math.max(0, after - before),
+  })
 })
 
 app.post('/api/admin/families/create', (req, res) => {
