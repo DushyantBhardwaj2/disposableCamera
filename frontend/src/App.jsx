@@ -88,12 +88,22 @@ function App() {
   const cameraStreamRef = useRef(null)
   const scannerLoopRef = useRef(null)
   const scannerInFlightRef = useRef(false)
+  const scannerBusyRef = useRef(false)
   const galleryRequestInFlightRef = useRef(false)
   const galleryPollTimerRef = useRef(null)
   const galleryPollFailureCountRef = useRef(0)
   const firstGalleryLoadRef = useRef(true)
   const dragRafRef = useRef(null)
   const pendingDragXRef = useRef(0)
+  const commentsCacheRef = useRef({})
+
+  useEffect(() => {
+    scannerBusyRef.current = scannerBusy
+  }, [scannerBusy])
+
+  useEffect(() => {
+    commentsCacheRef.current = comments
+  }, [comments])
 
   useEffect(() => {
     // Warm up Render on first page load to reduce cold-start delay for user actions.
@@ -821,7 +831,7 @@ function App() {
   const loadComments = useCallback(async (photoId) => {
     const tok = sessionToken
     if (!tok) return
-    if (comments[photoId]) return
+    if (commentsCacheRef.current[photoId]) return
     try {
       const res = await fetchWithTimeout(`${API_BASE_URL}/api/photos/${photoId}/comments`, {
         headers: { 'x-session-token': tok },
@@ -831,7 +841,7 @@ function App() {
         setComments((prev) => ({ ...prev, [photoId]: data.comments || [] }))
       }
     } catch { /* silent */ }
-  }, [sessionToken, comments])
+  }, [sessionToken])
 
   const openDrawer = (photoId) => {
     setDrawerPhotoId(photoId)
@@ -851,7 +861,7 @@ function App() {
   }
 
   const submitQrToken = useCallback(async (providedToken) => {
-    if (scannerBusy) {
+    if (scannerBusyRef.current) {
       return
     }
     const value = String(providedToken || '').trim()
@@ -868,7 +878,7 @@ function App() {
       setScanMessage(scanError?.message || 'Token invalid. Please retry.')
       setScannerBusy(false)
     }
-  }, [scannerBusy, bootstrapFromQrToken])
+  }, [bootstrapFromQrToken])
 
   useEffect(() => {
     if (!scanMode) {
@@ -917,7 +927,7 @@ function App() {
             return
           }
 
-          if (document.visibilityState !== 'visible' || !videoRef.current || scannerBusy || scannerInFlightRef.current) {
+          if (document.visibilityState !== 'visible' || !videoRef.current || scannerBusyRef.current || scannerInFlightRef.current) {
             scannerLoopRef.current = window.setTimeout(runScan, 900)
             return
           }
@@ -962,7 +972,7 @@ function App() {
         cameraStreamRef.current = null
       }
     }
-  }, [scanMode, scannerBusy, submitQrToken])
+  }, [scanMode, submitQrToken])
 
   const submitComment = async (photoId) => {
     const text = commentText.trim()
