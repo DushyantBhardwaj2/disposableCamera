@@ -715,9 +715,7 @@ function App() {
     if (!sessionToken || uploading) {
       return
     }
-    const failed = uploadJobs
-      .map((job, index) => ({ ...job, index }))
-      .filter((job) => job.status === 'error' && uploadFilesRef.current.has(job.id))
+    const failed = uploadJobs.filter((job) => job.status === 'error' && uploadFilesRef.current.has(job.id))
 
     if (!failed.length) {
       return
@@ -732,14 +730,14 @@ function App() {
         continue
       }
 
-      setUploadJobs((jobs) => jobs.map((j, idx) => idx === job.index ? { ...j, status: 'uploading', error: '' } : j))
+      setUploadJobs((jobs) => jobs.map((j) => j.id === job.id ? { ...j, status: 'uploading', error: '' } : j))
       try {
         await uploadOne(file)
         retried += 1
-        setUploadJobs((jobs) => jobs.map((j, idx) => idx === job.index ? { ...j, status: 'done' } : j))
+        setUploadJobs((jobs) => jobs.map((j) => j.id === job.id ? { ...j, status: 'done' } : j))
         uploadFilesRef.current.delete(job.id)
       } catch (retryError) {
-        setUploadJobs((jobs) => jobs.map((j, idx) => idx === job.index ? { ...j, status: 'error', error: retryError?.message || 'Failed' } : j))
+        setUploadJobs((jobs) => jobs.map((j) => j.id === job.id ? { ...j, status: 'error', error: retryError?.message || 'Failed' } : j))
       }
       await new Promise((resolve) => window.setTimeout(resolve, 0))
     }
@@ -751,9 +749,11 @@ function App() {
     }
   }
 
+  const brokenPhotoIdSet = useMemo(() => new Set(brokenPhotoIds), [brokenPhotoIds])
+
   const visibleGalleryItems = useMemo(
-    () => galleryItems.filter((item) => !brokenPhotoIds.includes(item.id)),
-    [galleryItems, brokenPhotoIds]
+    () => galleryItems.filter((item) => !brokenPhotoIdSet.has(item.id)),
+    [galleryItems, brokenPhotoIdSet]
   )
   const currentCard = visibleGalleryItems.length
     ? visibleGalleryItems[galleryIndex % visibleGalleryItems.length]
