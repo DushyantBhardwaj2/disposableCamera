@@ -1,0 +1,38 @@
+name = "wedding-photo-api"
+main = "src/index.ts"
+compatibility_date = "2026-03-14"
+
+# ─── Local / development defaults ────────────────────────────────────────────
+[[d1_databases]]
+binding = "DB"
+database_name = "wedding_db"
+database_id = "e2cfbc2d-93ce-4253-a91c-f2627444f6a1"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "MEDIA_BUCKET"
+bucket_name = "wedding-photo-media"
+
+[vars]
+UPLOAD_SIGNING_SECRET = "replace-with-strong-secret"
+
+# ─── Production environment ───────────────────────────────────────────────────
+# Usage:  npx wrangler deploy --env production
+[env.production]
+name = "wedding-photo-api-prod"
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "wedding_db"
+database_id = "e2cfbc2d-93ce-4253-a91c-f2627444f6a1"
+migrations_dir = "migrations"
+
+[[env.production.r2_buckets]]
+binding = "MEDIA_BUCKET"
+bucket_name = "wedding-photo-media"
+
+[env.production.vars]
+# Store UPLOAD_SIGNING_SECRET and ADMIN_PASSWORD as Wrangler secrets:
+#   npx wrangler secret put UPLOAD_SIGNING_SECRET --env production
+#   npx wrangler secret put ADMIN_PASSWORD --env production
+UPLOAD_SIGNING_SECRET = "set-via-wrangler-secret"

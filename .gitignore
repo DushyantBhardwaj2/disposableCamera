@@ -1,0 +1,15 @@
+# Node modules
+**/node_modules/
+
+# Local env secrets
+api/.env
+frontend/.env
+
+# Local sqlite and generated data
+api/data/
+
+# Build outputs
+frontend/dist/
+
+# Wrangler local state (legacy)
+api/.wrangler/

@@ -1,0 +1,10 @@
+body {
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  margin: 0;
+  background: radial-gradient(circle at top, #fff8ec, #ffe7d2 40%, #f6dac0 100%);
+  color: #2d1808;
+}
+
+#root {
+  min-height: 100vh;
+}
