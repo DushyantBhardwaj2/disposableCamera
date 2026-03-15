@@ -34,6 +34,7 @@ const PORT = Number(process.env.PORT || 8787)
 const signingSecret = process.env.UPLOAD_SIGNING_SECRET || 'local-dev-signing-secret'
 const adminPassword = process.env.ADMIN_PASSWORD || 'admin123'
 const maxUploadBytes = Number(process.env.MAX_UPLOAD_BYTES || 8 * 1024 * 1024)
+const slowRequestWarnMs = Number(process.env.SLOW_REQUEST_WARN_MS || 900)
 const s3Bucket = process.env.S3_BUCKET || ''
 const s3Region = process.env.S3_REGION || 'ap-south-1'
 const s3Endpoint = process.env.S3_ENDPOINT || undefined
@@ -46,6 +47,21 @@ type RateLimitBucket = {
 }
 
 const rateLimitStore = new Map<string, RateLimitBucket>()
+const telemetryCounters = new Map<string, number>()
+
+const bumpTelemetry = (key: string) => {
+  const normalized = String(key || '').trim().slice(0, 120)
+  if (!normalized) {
+    return
+  }
+  telemetryCounters.set(normalized, Number(telemetryCounters.get(normalized) || 0) + 1)
+}
+
+const normalizeTelemetryPath = (pathValue: string) => {
+  return String(pathValue || '')
+    .replace(/\/[0-9]+(?=\/|$)/g, '/:id')
+    .replace(/\/[0-9a-f]{8,}(?=\/|$)/gi, '/:id')
+}
 
 const db = new Database(dbPath)
 db.pragma('foreign_keys = ON')
@@ -93,6 +109,43 @@ app.use(
 )
 app.use(express.json({ limit: '20mb' }))
 
+app.use((req, res, next) => {
+  const startedAt = Date.now()
+  res.on('finish', () => {
+    if (!req.path.startsWith('/api/')) {
+      return
+    }
+
+    const normalizedPath = normalizeTelemetryPath(req.path)
+    const routeKey = `${req.method.toLowerCase()}_${normalizedPath}`
+    const durationMs = Date.now() - startedAt
+
+    bumpTelemetry(`api_route_${routeKey}`)
+
+    let latencyBucket = 'fast'
+    if (durationMs >= 2000) {
+      latencyBucket = 'over_2000ms'
+    } else if (durationMs >= 1000) {
+      latencyBucket = '1000_to_1999ms'
+    } else if (durationMs >= 500) {
+      latencyBucket = '500_to_999ms'
+    } else if (durationMs >= 200) {
+      latencyBucket = '200_to_499ms'
+    }
+    bumpTelemetry(`api_latency_${latencyBucket}_${routeKey}`)
+
+    if (durationMs >= slowRequestWarnMs) {
+      bumpTelemetry('api_slow_request')
+      console.warn(
+        `[api-latency] ${req.method} ${req.originalUrl} status=${res.statusCode} duration_ms=${durationMs} ip=${
+          req.ip || 'unknown'
+        }`
+      )
+    }
+  })
+  next()
+})
+
 const applyMigrations = () => {
   const migrationDir = path.join(rootDir, 'migrations')
   if (!fs.existsSync(migrationDir)) {
@@ -125,6 +178,13 @@ const json = (res: Response, data: JsonValue, status = 200) => {
 
 const errorJson = (res: Response, error: string, message: string, status: number) => {
   json(res, { error, message }, status)
+}
+
+const escapeSqlLike = (value: string) => value.replace(/[\\%_]/g, '\\$&')
+
+const parseDateFilter = (value: unknown) => {
+  const trimmed = String(value || '').trim()
+  return /^\d{4}-\d{2}-\d{2}$/.test(trimmed) ? trimmed : ''
 }
 
 const generateToken = () => {
@@ -428,10 +488,15 @@ app.get(['/', '/api'], (_req, res) => {
       'POST /api/admin/photos/:id/approve',
       'POST /api/admin/photos/:id/reject',
       'POST /api/admin/photos/bulk-approve',
+      'POST /api/admin/photos/bulk-reject',
       'GET /api/admin/photos/approved',
       'POST /api/admin/photos/:id/delete',
       'GET /api/admin/upload-toggle',
       'POST /api/admin/upload-toggle',
+      'GET /api/admin/families',
+      'GET /api/admin/telemetry/summary',
+      'POST /api/admin/telemetry/reset',
+      'GET /api/admin/health-snapshot',
       'POST /api/admin/families/create',
       'POST /api/dev/seed-approved',
     ],
@@ -440,6 +505,154 @@ app.get(['/', '/api'], (_req, res) => {
 
 app.get('/api/health', (_req, res) => {
   json(res, { status: 'ok', service: 'wedding-photo-api' })
+})
+
+app.post('/api/telemetry/client', (req, res) => {
+  if (!enforceRateLimit(req, res, 'client_telemetry', 80, 60_000)) {
+    return
+  }
+
+  const eventName = String(req.body?.event || '').trim().slice(0, 80)
+  if (!eventName) {
+    return errorJson(res, 'missing_event', 'event is required', 400)
+  }
+
+  const detailsRaw = req.body?.details
+  let details: Record<string, unknown> = {}
+  if (detailsRaw && typeof detailsRaw === 'object' && !Array.isArray(detailsRaw)) {
+    details = detailsRaw as Record<string, unknown>
+  }
+
+  console.warn(
+    `[client-telemetry] event=${eventName} ip=${req.ip || 'unknown'} details=${JSON.stringify(details).slice(0, 1200)}`
+  )
+  bumpTelemetry(`client_${eventName}`)
+
+  return json(res, { ok: true })
+})
+
+app.get('/api/admin/telemetry/summary', (req, res) => {
+  const auth = requireAdmin(req)
+  if (!auth.ok) {
+    return auth.response(res)
+  }
+
+  const allCounters = Array.from(telemetryCounters.entries())
+    .map(([event, count]) => ({ event, count }))
+    .sort((a, b) => b.count - a.count)
+
+  const counters = allCounters.slice(0, 50)
+  const routeHits = allCounters.filter((item) => item.event.startsWith('api_route_')).slice(0, 30)
+  const latencyBuckets = allCounters.filter((item) => item.event.startsWith('api_latency_')).slice(0, 30)
+  const clientEvents = allCounters.filter((item) => item.event.startsWith('client_')).slice(0, 30)
+  const other = allCounters
+    .filter(
+      (item) =>
+        !item.event.startsWith('api_route_') && !item.event.startsWith('api_latency_') && !item.event.startsWith('client_')
+    )
+    .slice(0, 30)
+
+  const sumCounts = (items: Array<{ count: number }>) => items.reduce((acc, item) => acc + Number(item.count || 0), 0)
+
+  return json(res, {
+    now: new Date().toISOString(),
+    counters,
+    groups: {
+      route_hits: routeHits,
+      latency_buckets: latencyBuckets,
+      client_events: clientEvents,
+      other,
+    },
+    totals: {
+      route_hits: sumCounts(routeHits),
+      latency_events: sumCounts(latencyBuckets),
+      client_events: sumCounts(clientEvents),
+      other_events: sumCounts(other),
+    },
+  })
+})
+
+app.post('/api/admin/telemetry/reset', (req, res) => {
+  const auth = requireAdmin(req)
+  if (!auth.ok) {
+    return auth.response(res)
+  }
+  const countBefore = telemetryCounters.size
+  telemetryCounters.clear()
+  console.warn(`[telemetry-reset] cleared ${countBefore} counters ip=${req.ip || 'unknown'}`)
+  return json(res, { ok: true, cleared: countBefore })
+})
+
+app.get('/api/admin/families', (req, res) => {
+  const auth = requireAdmin(req)
+  if (!auth.ok) {
+    return auth.response(res)
+  }
+
+  const rows = db
+    .prepare(
+      `SELECT id, name, slug, qr_token, is_active
+       FROM families
+       ORDER BY name ASC`
+    )
+    .all() as Array<{ id: number; name: string; slug: string; qr_token: string; is_active: number }>
+
+  return json(res, { families: rows })
+})
+
+app.get('/api/admin/health-snapshot', (req, res) => {
+  const auth = requireAdmin(req)
+  if (!auth.ok) {
+    return auth.response(res)
+  }
+
+  let dbFileSizeBytes = 0
+  try {
+    dbFileSizeBytes = fs.existsSync(dbPath) ? fs.statSync(dbPath).size : 0
+  } catch {
+    dbFileSizeBytes = 0
+  }
+
+  const pendingCount = Number(
+    (db.prepare("SELECT COUNT(1) AS total FROM photos WHERE status = 'pending' AND is_deleted = 0").get() as { total: number } | undefined)
+      ?.total || 0
+  )
+  const approvedCount = Number(
+    (db.prepare("SELECT COUNT(1) AS total FROM photos WHERE status = 'approved' AND is_deleted = 0").get() as { total: number } | undefined)
+      ?.total || 0
+  )
+  const familyCount = Number(
+    (db.prepare('SELECT COUNT(1) AS total FROM families').get() as { total: number } | undefined)?.total || 0
+  )
+  const activeSessionCount = Number(
+    (
+      db
+        .prepare('SELECT COUNT(1) AS total FROM guest_sessions WHERE datetime(expires_at) > datetime(\'now\')')
+        .get() as { total: number } | undefined
+    )?.total || 0
+  )
+
+  const telemetryEventCount = Array.from(telemetryCounters.values()).reduce((sum, count) => sum + Number(count || 0), 0)
+
+  return json(res, {
+    now: new Date().toISOString(),
+    status: {
+      db_ok: true,
+      s3_configured: Boolean(s3Client && s3Bucket),
+      upload_enabled: getUploadEnabled(),
+    },
+    counts: {
+      families: familyCount,
+      pending_photos: pendingCount,
+      approved_photos: approvedCount,
+      active_sessions: activeSessionCount,
+      telemetry_events: telemetryEventCount,
+    },
+    storage: {
+      db_file_size_bytes: dbFileSizeBytes,
+      db_file_size_mb: Number((dbFileSizeBytes / (1024 * 1024)).toFixed(2)),
+    },
+  })
 })
 
 app.post('/api/token/validate', (req, res) => {
@@ -629,15 +842,25 @@ app.post('/api/uploads/direct', async (req, res) => {
     return errorJson(res, 'file_too_large', `Decoded image exceeds ${maxUploadBytes} bytes`, 413)
   }
 
-  await s3Client!.send(
-    new PutObjectCommand({
-      Bucket: s3Bucket,
-      Key: storageKey,
-      Body: bytes,
-      ContentType: mimeType,
-      CacheControl: 'public, max-age=31536000, immutable',
-    })
-  )
+  try {
+    await s3Client!.send(
+      new PutObjectCommand({
+        Bucket: s3Bucket,
+        Key: storageKey,
+        Body: bytes,
+        ContentType: mimeType,
+        CacheControl: 'public, max-age=31536000, immutable',
+      })
+    )
+  } catch (uploadError) {
+    bumpTelemetry('uploads_direct_storage_error')
+    console.warn(
+      `[uploads-direct] s3_upload_failed family_id=${sessionResult.session.family_id} storage_key=${storageKey} message=${
+        String((uploadError as Error)?.message || 'unknown')
+      }`
+    )
+    return errorJson(res, 'storage_error', 'Unable to store uploaded image right now', 503)
+  }
 
   const fileUrl = `s3://${storageKey}`
   return json(res, { storage_key: storageKey, file_url: fileUrl }, 201)
@@ -673,6 +896,19 @@ app.get('/api/gallery/approved', (req, res) => {
     return sessionResult.response(res)
   }
 
+  const limitInput = Number(req.query.limit || 300)
+  const offsetInput = Number(req.query.offset || 0)
+  const limit = Math.min(Math.max(Number.isFinite(limitInput) ? limitInput : 300, 1), 500)
+  const offset = Math.max(Number.isFinite(offsetInput) ? offsetInput : 0, 0)
+
+  const totalRow = db
+    .prepare(
+      `SELECT COUNT(1) AS total
+       FROM photos
+       WHERE status = 'approved' AND family_id = ? AND is_deleted = 0`
+    )
+    .get(sessionResult.session.family_id) as { total: number } | undefined
+
   const rows = db
     .prepare(
       `SELECT
@@ -686,9 +922,9 @@ app.get('/api/gallery/approved', (req, res) => {
        LEFT JOIN guest_sessions ON guest_sessions.id = photos.guest_session_id
        WHERE photos.status = 'approved' AND photos.family_id = ? AND photos.is_deleted = 0
        ORDER BY photos.created_at DESC
-       LIMIT 300`
+       LIMIT ? OFFSET ?`
     )
-    .all(sessionResult.session.family_id) as Array<{
+     .all(sessionResult.session.family_id, limit, offset) as Array<{
     id: number
     filtered_url: string | null
     created_at: string
@@ -702,7 +938,8 @@ app.get('/api/gallery/approved', (req, res) => {
     filtered_url: toPublicMediaUrl(origin, row.filtered_url),
   }))
 
-  return json(res, { items })
+  const total = Number(totalRow?.total || 0)
+  return json(res, { items, limit, offset, total, has_more: offset + items.length < total })
 })
 
 app.post('/api/photos/:id/reaction', (req, res) => {
@@ -750,17 +987,27 @@ app.get('/api/photos/:id/comments', (req, res) => {
     return errorJson(res, 'photo_not_accessible', 'Photo not found for this family session', 404)
   }
 
+  const limitInput = Number(req.query.limit || 100)
+  const offsetInput = Number(req.query.offset || 0)
+  const limit = Math.min(Math.max(Number.isFinite(limitInput) ? limitInput : 100, 1), 200)
+  const offset = Math.max(Number.isFinite(offsetInput) ? offsetInput : 0, 0)
+
+  const totalRow = db
+    .prepare('SELECT COUNT(1) AS total FROM photo_comments WHERE photo_id = ?')
+    .get(photoId) as { total: number } | undefined
+
   const rows = db
     .prepare(
       `SELECT id, display_name, body, created_at
        FROM photo_comments
        WHERE photo_id = ?
        ORDER BY created_at ASC
-       LIMIT 100`
+       LIMIT ? OFFSET ?`
     )
-    .all(photoId) as Array<{ id: number; display_name: string | null; body: string; created_at: string }>
+    .all(photoId, limit, offset) as Array<{ id: number; display_name: string | null; body: string; created_at: string }>
 
-  return json(res, { photo_id: photoId, comments: rows })
+  const total = Number(totalRow?.total || 0)
+  return json(res, { photo_id: photoId, comments: rows, limit, offset, total, has_more: offset + rows.length < total })
 })
 
 app.post('/api/photos/:id/comments', (req, res) => {
@@ -872,6 +1119,39 @@ app.get('/api/admin/photos/pending', (req, res) => {
   const offsetInput = Number(req.query.offset || 0)
   const limit = Math.min(Math.max(Number.isFinite(limitInput) ? limitInput : 200, 1), 500)
   const offset = Math.max(Number.isFinite(offsetInput) ? offsetInput : 0, 0)
+  const search = String(req.query.search || '').trim().slice(0, 80)
+  const family = String(req.query.family || '').trim().slice(0, 80)
+  const familyIdInput = Number(req.query.family_id || 0)
+  const familyId = Number.isFinite(familyIdInput) && familyIdInput > 0 ? familyIdInput : 0
+  const fromDate = parseDateFilter(req.query.from)
+  const toDate = parseDateFilter(req.query.to)
+
+  const whereParts = ["photos.status = 'pending'", 'photos.is_deleted = 0']
+  const whereArgs: Array<string> = []
+
+  if (search) {
+    const searchLike = `%${escapeSqlLike(search)}%`
+    whereParts.push("(COALESCE(guest_sessions.display_name, '') LIKE ? ESCAPE '\\' OR families.name LIKE ? ESCAPE '\\')")
+    whereArgs.push(searchLike, searchLike)
+  }
+  if (family) {
+    whereParts.push("families.name LIKE ? ESCAPE '\\'")
+    whereArgs.push(`%${escapeSqlLike(family)}%`)
+  }
+  if (familyId) {
+    whereParts.push('photos.family_id = ?')
+    whereArgs.push(String(familyId))
+  }
+  if (fromDate) {
+    whereParts.push('date(photos.created_at) >= date(?)')
+    whereArgs.push(fromDate)
+  }
+  if (toDate) {
+    whereParts.push('date(photos.created_at) <= date(?)')
+    whereArgs.push(toDate)
+  }
+
+  const whereClause = whereParts.join(' AND ')
 
   const rows = db
     .prepare(
@@ -885,11 +1165,11 @@ app.get('/api/admin/photos/pending', (req, res) => {
        FROM photos
        JOIN families ON families.id = photos.family_id
        LEFT JOIN guest_sessions ON guest_sessions.id = photos.guest_session_id
-       WHERE photos.status = 'pending' AND photos.is_deleted = 0
+       WHERE ${whereClause}
        ORDER BY photos.created_at DESC
        LIMIT ? OFFSET ?`
     )
-     .all(limit, offset) as Array<{
+     .all(...whereArgs, limit, offset) as Array<{
     id: number
     original_url: string | null
     filtered_url: string | null
@@ -898,6 +1178,16 @@ app.get('/api/admin/photos/pending', (req, res) => {
     guest_name: string | null
   }>
 
+  const totalRow = db
+    .prepare(
+      `SELECT COUNT(1) AS total
+       FROM photos
+       JOIN families ON families.id = photos.family_id
+       LEFT JOIN guest_sessions ON guest_sessions.id = photos.guest_session_id
+       WHERE ${whereClause}`
+    )
+    .get(...whereArgs) as { total: number } | undefined
+
   const origin = `${req.protocol}://${req.get('host')}`
   const items = rows.map((row) => ({
     ...row,
@@ -905,7 +1195,8 @@ app.get('/api/admin/photos/pending', (req, res) => {
     filtered_url: toPublicMediaUrl(origin, row.filtered_url),
   }))
 
-  return json(res, { items, limit, offset })
+  const total = Number(totalRow?.total || 0)
+  return json(res, { items, limit, offset, total, has_more: offset + items.length < total })
 })
 
 app.post('/api/admin/photos/bulk-approve', (req, res) => {
@@ -937,6 +1228,35 @@ app.post('/api/admin/photos/bulk-approve', (req, res) => {
   return json(res, { updated: ids.length })
 })
 
+app.post('/api/admin/photos/bulk-reject', (req, res) => {
+  const auth = requireAdmin(req, req.body?.admin_token)
+  if (!auth.ok) {
+    return auth.response(res)
+  }
+
+  const ids = String(req.body?.ids_csv || '')
+    .split(',')
+    .map((x) => Number(x.trim()))
+    .filter((x) => Number.isFinite(x) && x > 0)
+
+  if (!ids.length) {
+    return errorJson(res, 'invalid_ids', 'ids_csv is required', 400)
+  }
+
+  const tx = db.transaction((items: number[]) => {
+    const rejectStmt = db.prepare("UPDATE photos SET status = 'rejected' WHERE id = ? AND is_deleted = 0")
+    const actionStmt = db.prepare("INSERT INTO moderation_actions (photo_id, action, moderator_name) VALUES (?, 'reject', 'admin')")
+    for (const id of items) {
+      rejectStmt.run(id)
+      actionStmt.run(id)
+    }
+  })
+
+  tx(ids)
+
+  return json(res, { updated: ids.length })
+})
+
 app.get('/api/admin/photos/approved', (req, res) => {
   const auth = requireAdmin(req)
   if (!auth.ok) {
@@ -947,6 +1267,39 @@ app.get('/api/admin/photos/approved', (req, res) => {
   const offsetInput = Number(req.query.offset || 0)
   const limit = Math.min(Math.max(Number.isFinite(limitInput) ? limitInput : 200, 1), 500)
   const offset = Math.max(Number.isFinite(offsetInput) ? offsetInput : 0, 0)
+  const search = String(req.query.search || '').trim().slice(0, 80)
+  const family = String(req.query.family || '').trim().slice(0, 80)
+  const familyIdInput = Number(req.query.family_id || 0)
+  const familyId = Number.isFinite(familyIdInput) && familyIdInput > 0 ? familyIdInput : 0
+  const fromDate = parseDateFilter(req.query.from)
+  const toDate = parseDateFilter(req.query.to)
+
+  const whereParts = ["photos.status = 'approved'", 'photos.is_deleted = 0']
+  const whereArgs: Array<string> = []
+
+  if (search) {
+    const searchLike = `%${escapeSqlLike(search)}%`
+    whereParts.push("(COALESCE(guest_sessions.display_name, '') LIKE ? ESCAPE '\\' OR families.name LIKE ? ESCAPE '\\')")
+    whereArgs.push(searchLike, searchLike)
+  }
+  if (family) {
+    whereParts.push("families.name LIKE ? ESCAPE '\\'")
+    whereArgs.push(`%${escapeSqlLike(family)}%`)
+  }
+  if (familyId) {
+    whereParts.push('photos.family_id = ?')
+    whereArgs.push(String(familyId))
+  }
+  if (fromDate) {
+    whereParts.push('date(photos.created_at) >= date(?)')
+    whereArgs.push(fromDate)
+  }
+  if (toDate) {
+    whereParts.push('date(photos.created_at) <= date(?)')
+    whereArgs.push(toDate)
+  }
+
+  const whereClause = whereParts.join(' AND ')
 
   const rows = db
     .prepare(
@@ -960,11 +1313,11 @@ app.get('/api/admin/photos/approved', (req, res) => {
        FROM photos
        JOIN families ON families.id = photos.family_id
        LEFT JOIN guest_sessions ON guest_sessions.id = photos.guest_session_id
-       WHERE photos.status = 'approved' AND photos.is_deleted = 0
+       WHERE ${whereClause}
        ORDER BY photos.created_at DESC
        LIMIT ? OFFSET ?`
     )
-    .all(limit, offset) as Array<{
+    .all(...whereArgs, limit, offset) as Array<{
     id: number
     original_url: string | null
     filtered_url: string | null
@@ -973,6 +1326,16 @@ app.get('/api/admin/photos/approved', (req, res) => {
     guest_name: string | null
   }>
 
+  const totalRow = db
+    .prepare(
+      `SELECT COUNT(1) AS total
+       FROM photos
+       JOIN families ON families.id = photos.family_id
+       LEFT JOIN guest_sessions ON guest_sessions.id = photos.guest_session_id
+       WHERE ${whereClause}`
+    )
+    .get(...whereArgs) as { total: number } | undefined
+
   const origin = `${req.protocol}://${req.get('host')}`
   const items = rows.map((row) => ({
     ...row,
@@ -980,7 +1343,8 @@ app.get('/api/admin/photos/approved', (req, res) => {
     filtered_url: toPublicMediaUrl(origin, row.filtered_url),
   }))
 
-  return json(res, { items, limit, offset })
+  const total = Number(totalRow?.total || 0)
+  return json(res, { items, limit, offset, total, has_more: offset + items.length < total })
 })
 
 app.post('/api/admin/photos/:id/delete', (req, res) => {
