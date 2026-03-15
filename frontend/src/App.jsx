@@ -96,6 +96,7 @@ function App() {
   const dragRafRef = useRef(null)
   const pendingDragXRef = useRef(0)
   const commentsCacheRef = useRef({})
+  const uploadFilesRef = useRef(new Map())
 
   useEffect(() => {
     scannerBusyRef.current = scannerBusy
@@ -672,18 +673,31 @@ function App() {
       return
     }
 
+    const jobs = imageFiles.map((file, index) => {
+      const id = `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`
+      uploadFilesRef.current.set(id, file)
+      return { id, name: file.name, status: 'pending', error: '' }
+    })
+
     setUploading(true)
-    setUploadJobs(imageFiles.map((f) => ({ name: f.name, status: 'pending', error: '', file: f })))
+    setUploadJobs(jobs)
 
     let doneCount = 0
-    for (let i = 0; i < imageFiles.length; i++) {
-      setUploadJobs((jobs) => jobs.map((j, idx) => idx === i ? { ...j, status: 'uploading' } : j))
+    for (let i = 0; i < jobs.length; i++) {
+      const job = jobs[i]
+      const file = uploadFilesRef.current.get(job.id)
+      if (!file) {
+        continue
+      }
+
+      setUploadJobs((items) => items.map((item) => item.id === job.id ? { ...item, status: 'uploading' } : item))
       try {
-        await uploadOne(imageFiles[i])
+        await uploadOne(file)
         doneCount++
-        setUploadJobs((jobs) => jobs.map((j, idx) => idx === i ? { ...j, status: 'done' } : j))
+        setUploadJobs((items) => items.map((item) => item.id === job.id ? { ...item, status: 'done' } : item))
+        uploadFilesRef.current.delete(job.id)
       } catch (uploadError) {
-        setUploadJobs((jobs) => jobs.map((j, idx) => idx === i ? { ...j, status: 'error', error: uploadError?.message || 'Failed' } : j))
+        setUploadJobs((items) => items.map((item) => item.id === job.id ? { ...item, status: 'error', error: uploadError?.message || 'Failed' } : item))
       }
       // Yield to UI thread between files on slower phones.
       await new Promise((resolve) => window.setTimeout(resolve, 0))
@@ -703,7 +717,7 @@ function App() {
     }
     const failed = uploadJobs
       .map((job, index) => ({ ...job, index }))
-      .filter((job) => job.status === 'error' && job.file)
+      .filter((job) => job.status === 'error' && uploadFilesRef.current.has(job.id))
 
     if (!failed.length) {
       return
@@ -713,11 +727,17 @@ function App() {
     let retried = 0
 
     for (const job of failed) {
+      const file = uploadFilesRef.current.get(job.id)
+      if (!file) {
+        continue
+      }
+
       setUploadJobs((jobs) => jobs.map((j, idx) => idx === job.index ? { ...j, status: 'uploading', error: '' } : j))
       try {
-        await uploadOne(job.file)
+        await uploadOne(file)
         retried += 1
         setUploadJobs((jobs) => jobs.map((j, idx) => idx === job.index ? { ...j, status: 'done' } : j))
+        uploadFilesRef.current.delete(job.id)
       } catch (retryError) {
         setUploadJobs((jobs) => jobs.map((j, idx) => idx === job.index ? { ...j, status: 'error', error: retryError?.message || 'Failed' } : j))
       }
@@ -807,12 +827,41 @@ function App() {
   }
 
   useEffect(() => {
+    const uploadFiles = uploadFilesRef.current
+
     return () => {
       if (dragRafRef.current !== null) {
         window.cancelAnimationFrame(dragRafRef.current)
       }
+      uploadFiles.clear()
     }
   }, [])
+
+  useEffect(() => {
+    if (!brokenPhotoIds.length) {
+      return
+    }
+
+    const idsInGallery = new Set(galleryItems.map((item) => item.id))
+    setBrokenPhotoIds((ids) => ids.filter((id) => idsInGallery.has(id)))
+  }, [galleryItems, brokenPhotoIds.length])
+
+  useEffect(() => {
+    if (!uploadJobs.length || uploading) {
+      return
+    }
+
+    const hasErrors = uploadJobs.some((job) => job.status === 'error')
+    if (hasErrors) {
+      return
+    }
+
+    const clearTimer = window.setTimeout(() => {
+      setUploadJobs([])
+    }, 2500)
+
+    return () => window.clearTimeout(clearTimer)
+  }, [uploadJobs, uploading])
 
   const cardDragStyle = (() => {
     if (flyDir === 'like') return { transform: 'translateX(600px) rotate(22deg)', transition: 'transform 0.32s ease-in', pointerEvents: 'none' }
