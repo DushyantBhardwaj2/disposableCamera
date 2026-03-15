@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import jsQR from 'jsqr'
 import './App.css'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "https://disposable-camera-api.onrender.com"
@@ -1605,12 +1606,6 @@ function App() {
         return
       }
 
-      if (!('BarcodeDetector' in window)) {
-        logClientTelemetry('scanner_barcode_detector_unsupported')
-        setScanMessage('Camera scanning is not supported on this browser. Enter token manually below.')
-        return
-      }
-
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: { ideal: 'environment' } },
@@ -1628,7 +1623,17 @@ function App() {
           await videoRef.current.play().catch(() => {})
         }
 
-        const detector = new window.BarcodeDetector({ formats: ['qr_code'] })
+        const supportsBarcodeDetector = 'BarcodeDetector' in window
+        const detector = supportsBarcodeDetector
+          ? new window.BarcodeDetector({ formats: ['qr_code'] })
+          : null
+        let fallbackCanvas = null
+        let fallbackContext = null
+
+        if (!supportsBarcodeDetector) {
+          logClientTelemetry('scanner_barcode_detector_unsupported')
+          setScanMessage('Using compatibility camera scanner for this browser...')
+        }
 
         const runScan = async () => {
           if (!mounted || !scanMode) {
@@ -1642,14 +1647,39 @@ function App() {
 
           scannerInFlightRef.current = true
           try {
-            const codes = await detector.detect(videoRef.current)
-            if (codes && codes.length > 0) {
-              const raw = String(codes[0].rawValue || '').trim()
-              if (raw) {
-                const tokenMatch = raw.match(/\/f\/([^/?#]+)/)
-                const pickedToken = tokenMatch ? decodeURIComponent(tokenMatch[1]) : raw
-                submitQrToken(pickedToken)
+            let raw = ''
+            const activeVideo = videoRef.current
+
+            if (detector && activeVideo) {
+              const codes = await detector.detect(activeVideo)
+              if (codes && codes.length > 0) {
+                raw = String(codes[0].rawValue || '').trim()
               }
+            } else if (activeVideo && activeVideo.videoWidth > 0 && activeVideo.videoHeight > 0) {
+              if (!fallbackCanvas) {
+                fallbackCanvas = document.createElement('canvas')
+                fallbackContext = fallbackCanvas.getContext('2d', { willReadFrequently: true })
+              }
+
+              if (fallbackCanvas && fallbackContext) {
+                if (fallbackCanvas.width !== activeVideo.videoWidth || fallbackCanvas.height !== activeVideo.videoHeight) {
+                  fallbackCanvas.width = activeVideo.videoWidth
+                  fallbackCanvas.height = activeVideo.videoHeight
+                }
+
+                fallbackContext.drawImage(activeVideo, 0, 0, fallbackCanvas.width, fallbackCanvas.height)
+                const frame = fallbackContext.getImageData(0, 0, fallbackCanvas.width, fallbackCanvas.height)
+                const decoded = jsQR(frame.data, fallbackCanvas.width, fallbackCanvas.height, {
+                  inversionAttempts: 'dontInvert',
+                })
+                raw = String(decoded?.data || '').trim()
+              }
+            }
+
+            if (raw) {
+              const tokenMatch = raw.match(/\/f\/([^/?#]+)/)
+              const pickedToken = tokenMatch ? decodeURIComponent(tokenMatch[1]) : raw
+              submitQrToken(pickedToken)
             }
           } catch {
             // Ignore intermittent scanner frame failures.
@@ -1657,7 +1687,7 @@ function App() {
             scannerInFlightRef.current = false
           }
 
-          scannerLoopRef.current = window.setTimeout(runScan, 650)
+          scannerLoopRef.current = window.setTimeout(runScan, detector ? 650 : 900)
         }
 
         runScan()
