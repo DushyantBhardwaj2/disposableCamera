@@ -905,9 +905,9 @@ app.get('/api/gallery/approved', (req, res) => {
     .prepare(
       `SELECT COUNT(1) AS total
        FROM photos
-       WHERE status = 'approved' AND family_id = ? AND is_deleted = 0`
+       WHERE status = 'approved' AND is_deleted = 0`
     )
-    .get(sessionResult.session.family_id) as { total: number } | undefined
+    .get() as { total: number } | undefined
 
   const rows = db
     .prepare(
@@ -920,11 +920,11 @@ app.get('/api/gallery/approved', (req, res) => {
        FROM photos
        JOIN families ON families.id = photos.family_id
        LEFT JOIN guest_sessions ON guest_sessions.id = photos.guest_session_id
-       WHERE photos.status = 'approved' AND photos.family_id = ? AND photos.is_deleted = 0
+       WHERE photos.status = 'approved' AND photos.is_deleted = 0
        ORDER BY photos.created_at DESC
        LIMIT ? OFFSET ?`
     )
-     .all(sessionResult.session.family_id, limit, offset) as Array<{
+     .all(limit, offset) as Array<{
     id: number
     filtered_url: string | null
     created_at: string
