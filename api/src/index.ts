@@ -369,6 +369,11 @@ app.post('/api/session/start', (req, res) => {
     return errorJson(res, 'db_error', 'Could not create guest session', 500)
   }
 
+  // Get photo limit from family (new disposable camera feature)
+  const photoLimit = typeof family.photo_limit_per_guest === 'number' ? family.photo_limit_per_guest : 25
+  const takenCount = dbMod.countPhotosBySession(db, session.id)
+  const shotsRemaining = Math.max(0, photoLimit - takenCount)
+
   return json(
     res,
     {
@@ -379,6 +384,9 @@ app.post('/api/session/start', (req, res) => {
         name: family.name,
         slug: family.slug,
       },
+      photo_limit: photoLimit,
+      shots_remaining: shotsRemaining,
+      total_shots_taken: takenCount,
     },
     201
   )
@@ -525,6 +533,92 @@ app.post('/api/uploads/direct', async (req, res) => {
 
   const fileUrl = `s3://${storageKey}`
   return json(res, { storage_key: storageKey, file_url: fileUrl }, 201)
+})
+
+// NEW: Camera capture endpoint for disposable camera feature
+app.post('/api/camera/capture', async (req, res) => {
+  if (!enforceRateLimit(req, res, 'camera_capture', 10, 60_000)) {
+    return
+  }
+
+  const sessionResult = auth.requireSession(req, req.body?.session_token)
+  if (!sessionResult.ok) {
+    return sessionResult.response(res)
+  }
+
+  const imageBase64 = String(req.body?.image_base64 || '').trim()
+  const cameraFacing = String(req.body?.camera_facing || 'environment').trim()
+
+  if (!imageBase64) {
+    return errorJson(res, 'missing_image', 'image_base64 is required', 400)
+  }
+
+  // Validate base64 image format
+  if (!imageBase64.startsWith('data:image/')) {
+    return errorJson(res, 'invalid_image', 'Image must be a data URL', 400)
+  }
+
+  // Check photo limit
+  const family = dbMod.findFamilyByToken(db, String(req.body?.qr_token || ''))
+  const photoLimit = family?.photo_limit_per_guest || 25
+  const takenCount = dbMod.countPhotosBySession(db, sessionResult.session.id)
+  const shotsRemaining = photoLimit - takenCount
+
+  if (shotsRemaining <= 0) {
+    return errorJson(res, 'no_shots_remaining', 'Guest has used all photo credits', 403)
+  }
+
+  // Decode base64 to buffer
+  const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, '')
+  let bytes: Buffer
+  try {
+    bytes = Buffer.from(base64Data, 'base64')
+  } catch {
+    return errorJson(res, 'invalid_image', 'Invalid base64 encoding', 400)
+  }
+
+  if (!bytes.length) {
+    return errorJson(res, 'invalid_image', 'Decoded image is empty', 400)
+  }
+
+  if (bytes.length > config.maxUploadBytes) {
+    return errorJson(res, 'image_too_large', `Image exceeds ${config.maxUploadBytes / 1024 / 1024}MB limit`, 413)
+  }
+
+  const origin = `${req.protocol}://${req.get('host')}`
+  const storageClient = getStorageClient(origin)
+  if (!storageClient) {
+    return errorJson(res, 'storage_unavailable', 'S3 is not configured', 503)
+  }
+
+  // Upload to S3
+  const storageKey = `family-${sessionResult.session.family_id}/${Date.now()}-${sessionResult.session.session_token.slice(0, 8)}.jpg`
+  const uploadResult = await storageClient.uploadFile(storageKey, bytes, {
+    contentType: 'image/jpeg',
+    cacheControl: 'public, max-age=31536000, immutable',
+  })
+
+  if (!uploadResult.success) {
+    bumpTelemetry('camera_capture_storage_error')
+    console.warn(
+      `[camera-capture] s3_upload_failed family_id=${sessionResult.session.family_id} session_id=${sessionResult.session.id}`
+    )
+    return errorJson(res, 'storage_error', 'Unable to save photo right now', 503)
+  }
+
+  // Register photo as pending
+  const fileUrl = `s3://${storageKey}`
+  const photo = dbMod.createPhoto(db, sessionResult.session.family_id, sessionResult.session.id, fileUrl, fileUrl, 'pending')
+
+  bumpTelemetry('camera_capture_success')
+
+  return json(res, {
+    success: true,
+    photo_id: photo.id,
+    storage_key: storageKey,
+    shots_remaining: Math.max(0, photoLimit - takenCount - 1),
+    status: 'pending',
+  }, 201)
 })
 
 app.post('/api/photos/register', (req, res) => {

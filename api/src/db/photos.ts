@@ -22,6 +22,19 @@ export function createPhoto(
   return photo
 }
 
+// NEW: Count photos taken by a session (for disposable camera)
+export function countPhotosBySession(db: DatabaseInstance, sessionId: number): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(1) AS total
+       FROM photos
+       WHERE guest_session_id = ? AND status != 'rejected' AND is_deleted = 0`
+    )
+    .get(sessionId) as { total: number } | undefined
+
+  return Number(row?.total || 0)
+}
+
 export function findPhotoById(db: DatabaseInstance, photoId: number): Photo | null {
   const row = db
     .prepare(

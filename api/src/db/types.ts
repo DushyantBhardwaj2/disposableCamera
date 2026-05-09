@@ -7,6 +7,10 @@ export interface Family {
   qr_token: string
   is_active: number
   created_at: string
+  // NEW: Disposable camera fields
+  event_date: string | null
+  photo_limit_per_guest: number
+  event_active: number
 }
 
 export interface GuestSession {
@@ -16,6 +20,9 @@ export interface GuestSession {
   session_token: string
   expires_at: string
   created_at: string
+  // NEW: Shot tracking
+  shots_remaining: number | null
+  total_shots_taken: number
 }
 
 export interface Photo {
