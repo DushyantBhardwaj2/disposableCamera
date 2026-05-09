@@ -1,0 +1,20 @@
+export const config = {
+    port: Number(process.env.PORT || 8787),
+    signingSecret: process.env.UPLOAD_SIGNING_SECRET || 'local-dev-signing-secret',
+    adminPassword: process.env.ADMIN_PASSWORD || 'admin123',
+    maxUploadBytes: Number(process.env.MAX_UPLOAD_BYTES || 8 * 1024 * 1024),
+    slowRequestWarnMs: Number(process.env.SLOW_REQUEST_WARN_MS || 900),
+    renderDiskPath: String(process.env.RENDER_DISK_PATH || '').trim(),
+    sqlitePathInput: String(process.env.SQLITE_PATH || '').trim(),
+    storage: {
+        bucket: process.env.S3_BUCKET || '',
+        region: process.env.S3_REGION || 'ap-south-1',
+        endpoint: process.env.S3_ENDPOINT || undefined,
+        forcePathStyle: process.env.S3_FORCE_PATH_STYLE === '1',
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID || undefined,
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || undefined,
+    },
+    isDevelopment: process.env.NODE_ENV !== 'production',
+    allowedProdOrigins: new Set(['https://disposable-camera-89a02.web.app', 'https://disposable-camera-89a02.firebaseapp.com']),
+    devOriginRegex: /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i,
+};
