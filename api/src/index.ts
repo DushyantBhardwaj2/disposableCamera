@@ -1064,4 +1064,3 @@ app.listen(config.port, () => {
     console.log('S3 not configured: set S3_BUCKET, S3_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY')
   }
 })
-// Force rebuild
